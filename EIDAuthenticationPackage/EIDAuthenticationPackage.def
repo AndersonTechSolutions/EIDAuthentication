@@ -17,4 +17,4 @@ SpLsaModeInitialize
 SpUserModeInitialize
 ; MSI functions
 Commit
-Uninstall
+Uninstall
