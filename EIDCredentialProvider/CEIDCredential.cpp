@@ -33,6 +33,8 @@
 #include "../EIDCardLibrary/guid.h"
 #include "../EIDCardLibrary/EIDCardLibrary.h"
 #include "../EIDCardLibrary/Package.h"
+#include "../EIDCardLibrary/GPO.h"
+#include "../EIDCardLibrary/AutoLogon.h"
 
 #include <CodeAnalysis/warnings.h>
 #pragma warning(push)
@@ -572,8 +574,23 @@ HRESULT CEIDCredential::GetSerialization(
     if (GetComputerNameW(wsz, &cch))
     {
         PWSTR pwzProtectedPin;
+        PWSTR pwzPin = _rgFieldStrings[SFI_PIN];
+        PWSTR pwzAutoLogonPin = NULL;
 
-        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PIN], _cpus, _dwFlags,  &pwzProtectedPin);
+        // auto logon : the PIN field is empty, use the PIN stored for this computer
+        if ((pwzPin == NULL || pwzPin[0] == L'\0') && GetPolicyValue(AutoLogonOnCardInsert)
+            && EIDGetAutoLogonPin(&pwzAutoLogonPin))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Using the auto logon PIN");
+            pwzPin = pwzAutoLogonPin;
+        }
+
+        hr = ProtectIfNecessaryAndCopyPassword(pwzPin, _cpus, _dwFlags,  &pwzProtectedPin);
+        if (pwzAutoLogonPin)
+        {
+            SecureZeroMemory(pwzAutoLogonPin, wcslen(pwzAutoLogonPin) * sizeof(WCHAR));
+            EIDFree(pwzAutoLogonPin);
+        }
 
         if (SUCCEEDED(hr))
         {

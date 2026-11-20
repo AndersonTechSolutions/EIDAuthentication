@@ -25,6 +25,10 @@
 
 #define TIMEOUT 300
 
+// flags stored in SCARD_READERSTATE.pvUserData
+#define EID_READER_REPORTED		0x1	// EIDCPRSConnecting* sent for the card in this reader
+#define EID_READER_AT_STARTUP	0x2	// the card was already there when the notifier started
+
 #pragma comment(lib,"Winscard")
 //#define  _CRTDBG_MAP_ALLOC
 //#include <crtdbg.h>
@@ -150,6 +154,7 @@ LONG CSmartCardConnectionNotifier::WaitForSmartCardInsertion()
 	SCARD_READERSTATE 		rgscState[MAXIMUM_SMARTCARD_READERS];
 	DWORD             		dwI, dwRdrCount;
 	HANDLE					hAccessStartedEvent[2];
+	BOOL					fInitialScan;
 
 
 	EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Enter");
@@ -215,59 +220,79 @@ LONG CSmartCardConnectionNotifier::WaitForSmartCardInsertion()
 		
 		// Call the SCardGetStatusChange to detect configuration changes on all the detected
 		// readers.
+		// The first answer describes the cards already in the readers : they are reported
+		// as EIDCPRSConnectingAtStartup so that the provider can tell them from a real insertion.
+		fInitialScan = TRUE;
 		Status = SCardGetStatusChange(_hSCardContext, (DWORD) 2000 ,rgscState,dwRdrCount);
 		while((Status == SCARD_S_SUCCESS) || (Status == SCARD_E_TIMEOUT))
 		{ 
 			for ( dwI=0; dwI < dwRdrCount; dwI++)
 			{
-				
+				// pvUserData holds the EID_READER_* flags of this reader
+				DWORD_PTR dwReaderFlags = (DWORD_PTR) rgscState[dwI].pvUserData;
 				if (!(SCARD_STATE_MUTE & rgscState[dwI].dwEventState))
 				{
 					// Report the status for all the reader where a change has been detected.
 					if ((0 != ( SCARD_STATE_CHANGED & rgscState[dwI].dwEventState)))
 					{
 						EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"SCardGetStatusChange :0x%08X",rgscState[dwI].dwEventState);
-						if ( (SCARD_STATE_PRESENT  & rgscState[dwI].dwEventState) &&
-								!(SCARD_STATE_PRESENT & rgscState[dwI].dwCurrentState))
+						BOOL fPresent = (0 != (SCARD_STATE_PRESENT & rgscState[dwI].dwEventState));
+						if (fPresent && fInitialScan)
 						{
-							LPTSTR pmszCards = NULL;
-							DWORD cch = SCARD_AUTOALLOCATE;
-							for (DWORD dwJ = 0; dwJ < 4; dwJ++)
-							{
-								EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"ATR :%02X %02X %02X %02X %02X %02X %02X %02X",
-									rgscState[dwI].rgbAtr[dwJ * 8 + 0],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 1],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 2],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 3],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 4],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 5],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 6],
-									rgscState[dwI].rgbAtr[dwJ * 8 + 7]
-								);
-							}
-							Status = SCardListCards(_hSCardContext,rgscState[dwI].rgbAtr,NULL,NULL, (LPTSTR)&pmszCards,&cch );
-							if (Status != SCARD_S_SUCCESS)
-							{
-								EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to retrieve smart card name 0x%08x",Status);
-							}
-							Callback(EIDCPRSConnecting,rgscState[dwI].szReader, pmszCards, (rgscState[dwI].dwEventState)>>16);
-							SCardFreeMemory(_hSCardContext,pmszCards);
-							rgscState[dwI].dwCurrentState = SCARD_STATE_PRESENT;
-
+							dwReaderFlags |= EID_READER_AT_STARTUP;
 						}
-						if ( !(SCARD_STATE_PRESENT & rgscState[dwI].dwEventState) &&
-								(SCARD_STATE_PRESENT & rgscState[dwI].dwCurrentState) &&
-								!(SCARD_STATE_MUTE & rgscState[dwI].dwCurrentState)
-								)
+						if (fPresent && !(dwReaderFlags & EID_READER_REPORTED))
 						{
+							if (SCARD_STATE_EXCLUSIVE & rgscState[dwI].dwEventState)
+							{
+								// another application (ex: a badge reader service) holds the card :
+								// reading it now fails with a sharing violation.
+								// Wait for the next state change, when the card is released.
+								EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Card held exclusively by another application - waiting");
+							}
+							else
+							{
+								LPTSTR pmszCards = NULL;
+								DWORD cch = SCARD_AUTOALLOCATE;
+								for (DWORD dwJ = 0; dwJ < 4; dwJ++)
+								{
+									EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"ATR :%02X %02X %02X %02X %02X %02X %02X %02X",
+										rgscState[dwI].rgbAtr[dwJ * 8 + 0],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 1],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 2],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 3],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 4],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 5],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 6],
+										rgscState[dwI].rgbAtr[dwJ * 8 + 7]
+									);
+								}
+								Status = SCardListCards(_hSCardContext,rgscState[dwI].rgbAtr,NULL,NULL, (LPTSTR)&pmszCards,&cch );
+								if (Status != SCARD_S_SUCCESS)
+								{
+									EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to retrieve smart card name 0x%08x",Status);
+								}
+								Callback((dwReaderFlags & EID_READER_AT_STARTUP) ? EIDCPRSConnectingAtStartup : EIDCPRSConnecting,
+									rgscState[dwI].szReader, pmszCards, (rgscState[dwI].dwEventState)>>16);
+								SCardFreeMemory(_hSCardContext,pmszCards);
+								dwReaderFlags |= EID_READER_REPORTED;
+							}
+						}
+						if (!fPresent)
+						{
+							if (dwReaderFlags & EID_READER_REPORTED)
+							{
 								Callback(EIDCPRSDisconnected,rgscState[dwI].szReader, NULL, 0);
-								rgscState[dwI].dwCurrentState = SCARD_STATE_EMPTY;
+							}
+							dwReaderFlags = 0;
 						}
 					}				
 				}
+				rgscState[dwI].pvUserData = (PVOID) dwReaderFlags;
 				// Memorize the current state.
 				rgscState[dwI].dwCurrentState = rgscState[dwI].dwEventState;
 			}	
+			fInitialScan = FALSE;
 			//update reader list (add or remove readers)
 			Status = GetReaderStates(rgscState,&dwRdrCount);
 			if(Status != SCARD_S_SUCCESS)
@@ -292,7 +317,7 @@ LONG CSmartCardConnectionNotifier::WaitForSmartCardInsertion()
 			// so it can be added again
 			if (Status == SCARD_E_SYSTEM_CANCELLED)
 			{
-				if (SCARD_STATE_PRESENT  & rgscState[dwI].dwEventState)
+				if (((DWORD_PTR) rgscState[dwI].pvUserData) & EID_READER_REPORTED)
 				{
 					Callback(EIDCPRSDisconnected,rgscState[dwI].szReader, NULL, 0);
 				}

@@ -68,7 +68,7 @@ Section "Core" SecCore
   SetRegView 64
 
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "DisplayName" "EID Authentication"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "UninstallString" "$WINDIR\SYSWOW64\EIDUninstall.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\EIDAuthentication" "UninstallString" "$WINDIR\System32\EIDUninstall.exe"
 
   ExecWait 'rundll32.exe EIDAuthenticationPackage.dll,DllRegister'
  

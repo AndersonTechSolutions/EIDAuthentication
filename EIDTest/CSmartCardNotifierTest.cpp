@@ -12,6 +12,9 @@ public:
 	{
 		switch(Message)
 		{
+		case EIDCPRSConnectingAtStartup:
+			MessageBox(0,_T("OnCardPresentAtStartup"),_T("SmartCardThread"),0);
+			break;
 		case EIDCPRSConnecting:
 			MessageBox(0,_T("OnCardInsert"),_T("SmartCardThread"),0);
 			break;

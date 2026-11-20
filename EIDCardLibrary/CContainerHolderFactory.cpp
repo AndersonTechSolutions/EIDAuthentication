@@ -105,11 +105,22 @@ BOOL CContainerHolderFactory<T>::ConnectNotificationGeneric(__in LPCTSTR szReade
 	}
 
 
-	bStatus = CryptAcquireContext(&HCryptProv,
-				szMainContainerName,
-				szProviderName,
-				PROV_RSA_FULL,
-				CRYPT_SILENT);
+	// another application may hold the card exclusively right after its insertion
+	// (ex: a badge reader service) : retry for up to 3 seconds before giving up
+	for (DWORD dwTry = 0; ; dwTry++)
+	{
+		bStatus = CryptAcquireContext(&HCryptProv,
+					szMainContainerName,
+					szProviderName,
+					PROV_RSA_FULL,
+					CRYPT_SILENT);
+		if (bStatus || GetLastError() != (DWORD) SCARD_E_SHARING_VIOLATION || dwTry >= 15)
+		{
+			break;
+		}
+		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"CryptAcquireContext sharing violation - retry %d",dwTry);
+		Sleep(200);
+	}
 	if (!bStatus)
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CryptAcquireContext 1 0x%08x",GetLastError());
@@ -446,4 +457,4 @@ T* CContainerHolderFactory<T>::GetContainerHolderAt(DWORD dwIndex)
 	std::list<T*>::iterator it = _CredentialList.begin();
 	std::advance(it, dwIndex);
 	return *it;
-}
+}

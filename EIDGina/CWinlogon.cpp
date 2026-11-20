@@ -153,6 +153,7 @@ void CWinLogon::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in LPCT
 {
 	switch(Message)
 	{
+	case EIDCPRSConnectingAtStartup:
 	case EIDCPRSConnecting:
 		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO, L"EIDCPRSConnecting");
 		wcscpy_s(_szReader, ARRAYSIZE(_szReader), szReader);
@@ -731,4 +732,4 @@ VOID CWinLogon::ExecuteRemovePolicy()
 BOOL CWinLogon::IsRemote()
 {
 	return 0 != GetSystemMetrics(SM_REMOTESESSION);
-}
+}

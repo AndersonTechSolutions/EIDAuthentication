@@ -31,6 +31,7 @@ enum GPOPolicy
   ForceReadingAllCertificates,
   scforceoption,
   scremoveoption,
+  AutoLogonOnCardInsert,
 } ;
 
 

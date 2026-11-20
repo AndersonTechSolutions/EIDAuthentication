@@ -110,6 +110,8 @@ typedef enum _EID_CREDENTIAL_PROVIDER_READER_STATE
 	EIDCPRSConnected,
 	EIDCPRSDisconnected,
 	EIDCPRSThreadFinished,
+	// card already in the reader when the notifier started (no insertion by the user)
+	EIDCPRSConnectingAtStartup,
 } EID_CREDENTIAL_PROVIDER_READER_STATE;
 
 typedef enum _EID_CALLPACKAGE_MESSAGE
@@ -238,4 +240,4 @@ typedef struct _EID_SSP_CALLBACK_MESSAGE
 {
 	EID_SSP_CALLER Caller;
 	HANDLE hToken;
-} EID_SSP_CALLBACK_MESSAGE, *PEID_SSP_CALLBACK_MESSAGE;
+} EID_SSP_CALLBACK_MESSAGE, *PEID_SSP_CALLBACK_MESSAGE;

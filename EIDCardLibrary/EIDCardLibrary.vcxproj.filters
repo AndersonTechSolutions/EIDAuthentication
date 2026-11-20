@@ -32,6 +32,9 @@
     <ClCompile Include="CSmartCardNotifier.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="AutoLogon.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="GPO.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -88,6 +91,9 @@
     <ClInclude Include="EIDCardLibrary.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="AutoLogon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="GPO.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -119,4 +125,4 @@
   <ItemGroup>
     <None Include="ReadMe.txt" />
   </ItemGroup>
-</Project>
+</Project>

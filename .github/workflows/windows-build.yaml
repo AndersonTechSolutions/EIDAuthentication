@@ -2,6 +2,9 @@ name: Build on windows.
 on:
   release:
     types: [published]
+  push:
+    branches: ['feature/**']
+  workflow_dispatch:
 jobs:
   build:
 
@@ -45,6 +48,16 @@ jobs:
         with: 
           script-file: Installer/Installerx64.nsi
           arguments: "/V3"
+
+      - name: upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: EIDAuthentication-x64-${{ github.sha }}
+          path: |
+            Installer/EIDInstallx64.exe
+            x64/Release/*.dll
+            x64/Release/*.exe
+            x64/Release/*.pdb
 
       - name: upload binaries to release
         uses: softprops/action-gh-release@v1
