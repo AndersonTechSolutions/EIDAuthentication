@@ -19,6 +19,7 @@
 #define WIN32_NO_STATUS
 #include <windows.h>
 #include <tchar.h>
+#include <stdio.h>
 #include <Ntsecapi.h>
 
 #include "EidCardLibrary.h"
@@ -27,22 +28,34 @@
 
 #pragma comment(lib,"advapi32")
 
+#include "GPO.h"
+
 #define AUTOLOGON_PIN_SECRET L"L$_EID_AutoLogonPin"
 #define AUTOLOGON_PIN_MAXLEN 64
 
-static VOID InitSecretName(PLSA_UNICODE_STRING plusSecretName)
+// secret of the computer, or of a user when dwRid != 0
+static VOID InitSecretName(__in DWORD dwRid, __out_ecount(64) PWSTR szName, __out PLSA_UNICODE_STRING plusSecretName)
 {
-	plusSecretName->Buffer = (PWSTR) AUTOLOGON_PIN_SECRET;
-	plusSecretName->Length = (USHORT) (wcslen(AUTOLOGON_PIN_SECRET) * sizeof(WCHAR));
+	if (dwRid)
+	{
+		swprintf_s(szName, 64, L"%s_%08X", AUTOLOGON_PIN_SECRET, dwRid);
+	}
+	else
+	{
+		wcscpy_s(szName, 64, AUTOLOGON_PIN_SECRET);
+	}
+	plusSecretName->Buffer = szName;
+	plusSecretName->Length = (USHORT) (wcslen(szName) * sizeof(WCHAR));
 	plusSecretName->MaximumLength = plusSecretName->Length;
 }
 
-BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin)
+static BOOL StorePin(__in DWORD dwRid, __in_opt PCWSTR szPin)
 {
 	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
 	LSA_HANDLE LsaPolicyHandle = NULL;
 	LSA_UNICODE_STRING lusSecretName;
 	LSA_UNICODE_STRING lusSecretData;
+	WCHAR szName[64];
 	NTSTATUS ntsResult;
 	DWORD dwError = 0;
 	BOOL fReturn = FALSE;
@@ -62,7 +75,7 @@ BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin)
 			dwError = LsaNtStatusToWinError(ntsResult);
 			__leave;
 		}
-		InitSecretName(&lusSecretName);
+		InitSecretName(dwRid, szName, &lusSecretName);
 		if (szPin)
 		{
 			lusSecretData.Buffer = (PWSTR) szPin;
@@ -80,7 +93,7 @@ BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin)
 			dwError = LsaNtStatusToWinError(ntsResult);
 			__leave;
 		}
-		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Auto logon PIN %s", szPin ? L"set" : L"cleared");
+		EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Auto logon PIN %s for rid 0x%x", szPin ? L"set" : L"cleared", dwRid);
 		fReturn = TRUE;
 	}
 	__finally
@@ -91,12 +104,13 @@ BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin)
 	return fReturn;
 }
 
-BOOL EIDGetAutoLogonPin(__out PWSTR* pszPin)
+static BOOL RetrievePin(__in DWORD dwRid, __out PWSTR* pszPin)
 {
 	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
 	LSA_HANDLE LsaPolicyHandle = NULL;
 	LSA_UNICODE_STRING lusSecretName;
 	PLSA_UNICODE_STRING pData = NULL;
+	WCHAR szName[64];
 	NTSTATUS ntsResult;
 	DWORD dwError = 0;
 	BOOL fReturn = FALSE;
@@ -111,7 +125,7 @@ BOOL EIDGetAutoLogonPin(__out PWSTR* pszPin)
 			dwError = LsaNtStatusToWinError(ntsResult);
 			__leave;
 		}
-		InitSecretName(&lusSecretName);
+		InitSecretName(dwRid, szName, &lusSecretName);
 		ntsResult = LsaRetrievePrivateData(LsaPolicyHandle, &lusSecretName, &pData);
 		if (STATUS_SUCCESS != ntsResult)
 		{
@@ -152,14 +166,62 @@ BOOL EIDGetAutoLogonPin(__out PWSTR* pszPin)
 	return fReturn;
 }
 
-BOOL EIDHasAutoLogonPin()
+BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin)
+{
+	return StorePin(0, szPin);
+}
+
+BOOL EIDSetUserAutoLogonPin(__in DWORD dwRid, __in_opt PCWSTR szPin)
+{
+	if (!dwRid)
+	{
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+	return StorePin(dwRid, szPin);
+}
+
+BOOL EIDGetAutoLogonPin(__in DWORD dwRid, __out PWSTR* pszPin)
+{
+	if (dwRid && RetrievePin(dwRid, pszPin))
+	{
+		return TRUE;
+	}
+	return RetrievePin(0, pszPin);
+}
+
+BOOL EIDHasAutoLogonPin(__in DWORD dwRid)
 {
 	PWSTR szPin = NULL;
-	if (!EIDGetAutoLogonPin(&szPin))
+	if (!EIDGetAutoLogonPin(dwRid, &szPin))
 	{
 		return FALSE;
 	}
 	SecureZeroMemory(szPin, wcslen(szPin) * sizeof(WCHAR));
 	EIDFree(szPin);
 	return TRUE;
+}
+
+VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin)
+{
+	PWSTR szStoredPin = NULL;
+	if (!dwRid || !szPin || !szPin[0] || !GetPolicyValue(AutoLogonOnCardInsert))
+	{
+		return;
+	}
+	// write only when it changed (the PIN can come from the secret itself)
+	if (RetrievePin(dwRid, &szStoredPin))
+	{
+		BOOL fSame = (wcscmp(szStoredPin, szPin) == 0);
+		SecureZeroMemory(szStoredPin, wcslen(szStoredPin) * sizeof(WCHAR));
+		EIDFree(szStoredPin);
+		if (fSame)
+		{
+			return;
+		}
+	}
+	if (!StorePin(dwRid, szPin))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to learn the PIN of rid 0x%x : 0x%08x", dwRid, GetLastError());
+	}
 }

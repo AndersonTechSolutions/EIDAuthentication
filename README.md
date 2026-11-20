@@ -21,7 +21,8 @@ https://github.com/uberlinuxguy/EIDAuthentication/discussions/2
 Kiosk mode: inserting an enrolled badge logs on (or unlocks) without typing the PIN.
 
 - Enable with the DWORD policy `HKLM\SOFTWARE\Policies\EIDAuthentication\AutoLogonOnCardInsert = 1`.
-- Store the badge PIN once per computer (LSA secret, readable only by SYSTEM and administrators):
+- Per-employee PIN (default): the first successful PIN logon of a user on a computer stores that PIN for the user (LSA secret `L$_EID_AutoLogonPin_<RID>`, readable only by SYSTEM and administrators). The enrollment wizard's test logon counts. Every later insertion logs on without typing. A wrong PIN forgets it; removing the user's EID credential removes it.
+- Optional computer-wide fallback PIN (all badges share it):
   `set EID_AUTOLOGON_PIN=<pin>` then `rundll32 EIDAuthenticationPackage.dll,SetAutoLogonPin`.
   Remove it with `rundll32 EIDAuthenticationPackage.dll,ClearAutoLogonPin`.
 - Only a card *inserted* while the logon/lock screen is shown triggers it; a card left in the reader does not unlock a session that was just locked.

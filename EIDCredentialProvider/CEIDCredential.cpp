@@ -558,6 +558,12 @@ HRESULT EIDUnlockLogonInit(
 // (logon/unlock is what's demonstrated in this sample).  LogonUI then passes these credentials 
 // back to the system to log on.
 // http://msdn.microsoft.com/en-us/library/bb776026(VS.85).aspx
+// a PIN is stored for the auto logon of the user of this credential (or of the computer)
+BOOL CEIDCredential::HasAutoLogonPin()
+{
+	return EIDHasAutoLogonPin(GetRidFromUsername(_rgFieldStrings[SFI_USERNAME]));
+}
+
 HRESULT CEIDCredential::GetSerialization(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs, 
@@ -579,7 +585,7 @@ HRESULT CEIDCredential::GetSerialization(
 
         // auto logon : the PIN field is empty, use the PIN stored for this computer
         if ((pwzPin == NULL || pwzPin[0] == L'\0') && GetPolicyValue(AutoLogonOnCardInsert)
-            && EIDGetAutoLogonPin(&pwzAutoLogonPin))
+            && EIDGetAutoLogonPin(GetRidFromUsername(_rgFieldStrings[SFI_USERNAME]), &pwzAutoLogonPin))
         {
             EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Using the auto logon PIN");
             pwzPin = pwzAutoLogonPin;

@@ -45,6 +45,7 @@
 #include "../EIDCardLibrary/CertificateValidation.h"
 #include "../EIDCardLibrary/StoredCredentialManagement.h"
 #include "../EIDCardLibrary/SmartCardModule.h"
+#include "../EIDCardLibrary/AutoLogon.h"
 
 	
 extern "C"
@@ -306,6 +307,7 @@ extern "C"
 				}
 				EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Has Autorization for rid = 0x%x", pBuffer->dwRid);
 				fStatus = CStoredCredentialManager::Instance()->RemoveStoredCredential(pBuffer->dwRid);
+				EIDSetUserAutoLogonPin(pBuffer->dwRid, NULL);
 				if (!fStatus)
 				{
 					pBuffer->dwError = GetLastError();
@@ -859,6 +861,9 @@ extern "C"
 					case NTE_BAD_KEYSET:
 						return STATUS_SMARTCARD_NO_KEYSET;
 					case SCARD_W_WRONG_CHV:
+						// the PIN learnt for auto logon may be outdated : forget it so that
+						// the next insertions don't consume the remaining attempts
+						EIDSetUserAutoLogonPin(dwRid, NULL);
 						*SubStatus = 0xFFFFFFFF;
 						return STATUS_SMARTCARD_WRONG_PIN;
 					case SCARD_W_CHV_BLOCKED:
@@ -873,6 +878,8 @@ extern "C"
 				
 			}
 			EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"RetrieveStoredCredential OK");
+			// the PIN is right : remember it for the auto logon of this user (if enabled)
+			EIDLearnUserAutoLogonPin(dwRid, pPin);
 
 			CertFreeCertificateContext(pCertContext);
 

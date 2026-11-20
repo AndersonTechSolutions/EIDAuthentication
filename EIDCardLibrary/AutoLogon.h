@@ -19,14 +19,22 @@
 
 /** Auto logon on card insertion (AndersonTech kiosk mode)
 
-The PIN of the badges is stored once per computer in a LSA secret, readable only
-by SYSTEM and the administrators. When the AutoLogonOnCardInsert policy is set,
-the credential provider uses it to log on as soon as an enrolled card is inserted :
-the possession of the card is then enough to log on.
+When the AutoLogonOnCardInsert policy is set, the credential provider logs on as soon as
+an enrolled card is inserted, with a PIN stored in a LSA secret (readable only by SYSTEM
+and the administrators) :
+- the PIN of the user, learnt by the authentication package at the first successful PIN
+  logon of this user on this computer (one PIN per employee, same on every station)
+- else the PIN of the computer, set by SetAutoLogonPin (all the badges share it)
+The possession of the card is then enough to log on.
 */
 
-// set the PIN used for auto logon. NULL removes it.
+// set the PIN of the computer. NULL removes it.
 BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin);
-// retrieve the PIN. The caller must SecureZeroMemory and EIDFree it.
-BOOL EIDGetAutoLogonPin(__out PWSTR* pszPin);
-BOOL EIDHasAutoLogonPin();
+// set the PIN learnt for a user. NULL removes it.
+BOOL EIDSetUserAutoLogonPin(__in DWORD dwRid, __in_opt PCWSTR szPin);
+// PIN of the user (dwRid != 0), else PIN of the computer.
+// The caller must SecureZeroMemory and EIDFree it.
+BOOL EIDGetAutoLogonPin(__in DWORD dwRid, __out PWSTR* pszPin);
+BOOL EIDHasAutoLogonPin(__in DWORD dwRid);
+// called by the authentication package after a successful PIN logon
+VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin);
