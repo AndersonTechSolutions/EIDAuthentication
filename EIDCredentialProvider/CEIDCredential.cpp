@@ -559,9 +559,10 @@ HRESULT EIDUnlockLogonInit(
 // back to the system to log on.
 // http://msdn.microsoft.com/en-us/library/bb776026(VS.85).aspx
 // a PIN is stored for the auto logon of the user of this credential (or of the computer)
+// (the RID comes from the stored credential : the username field holds the certificate name)
 BOOL CEIDCredential::HasAutoLogonPin()
 {
-	return EIDHasAutoLogonPin(GetRidFromUsername(_rgFieldStrings[SFI_USERNAME]));
+	return EIDHasAutoLogonPin(_pContainer->GetRid());
 }
 
 HRESULT CEIDCredential::GetSerialization(
@@ -585,7 +586,7 @@ HRESULT CEIDCredential::GetSerialization(
 
         // auto logon : the PIN field is empty, use the PIN stored for this computer
         if ((pwzPin == NULL || pwzPin[0] == L'\0') && GetPolicyValue(AutoLogonOnCardInsert)
-            && EIDGetAutoLogonPin(GetRidFromUsername(_rgFieldStrings[SFI_USERNAME]), &pwzAutoLogonPin))
+            && EIDGetAutoLogonPin(_pContainer->GetRid(), &pwzAutoLogonPin))
         {
             EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Using the auto logon PIN");
             pwzPin = pwzAutoLogonPin;
