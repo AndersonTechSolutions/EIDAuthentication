@@ -148,6 +148,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="AutoLogon.cpp" />
     <ClCompile Include="CContainer.cpp" />
     <ClCompile Include="CContainerHolderFactory.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
@@ -171,6 +172,7 @@
     <ClCompile Include="Tracing.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AutoLogon.h" />
     <ClInclude Include="CContainer.h" />
     <ClInclude Include="CContainerHolderFactory.h" />
     <ClInclude Include="CertificateUtilities.h" />
@@ -196,4 +198,4 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
-</Project>
+</Project>

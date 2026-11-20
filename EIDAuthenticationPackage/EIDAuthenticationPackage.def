@@ -5,6 +5,8 @@ DllRegister
 DllUnRegister
 DllEnableLogging
 DllDisableLogging
+SetAutoLogonPin
+ClearAutoLogonPin
 LsaApCallPackage
 LsaApCallPackagePassthrough
 LsaApCallPackageUntrusted
@@ -15,4 +17,4 @@ SpLsaModeInitialize
 SpUserModeInitialize
 ; MSI functions
 Commit
-Uninstall
+Uninstall

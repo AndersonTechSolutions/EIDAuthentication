@@ -115,6 +115,8 @@ private:
     CREDENTIAL_PROVIDER_USAGE_SCENARIO      _cpus;
 	DWORD									_dwFlags;
 	BOOL									_fDontShowAnything;
+	// set by a card insertion when AutoLogonOnCardInsert is enabled, consumed by GetCredentialCount
+	volatile LONG							_lAutoLogonArmed;
 	CContainerHolderFactory<CEIDCredential>	_CredentialList;
 	CSmartCardConnectionNotifier*			_pSmartCardConnectionNotifier;
 };

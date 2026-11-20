@@ -30,6 +30,7 @@
 TCHAR szMainGPOKey[] = _T("SOFTWARE\\Policies\\Microsoft\\Windows\\SmartCardCredentialProvider");
 TCHAR szRemoveGPOKey[] = _T("Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon");
 TCHAR szForceGPOKey[] = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System");
+TCHAR szEIDGPOKey[] = _T("SOFTWARE\\Policies\\EIDAuthentication");
 typedef struct _GPOInfo
 {
 	LPCTSTR Key;
@@ -51,7 +52,8 @@ GPOInfo MyGPOInfo[] =
   {szMainGPOKey, _T("FilterDuplicateCertificates") },
   {szMainGPOKey, _T("ForceReadingAllCertificates") },
   {szForceGPOKey, _T("scforceoption") },
-  {szRemoveGPOKey, _T("scremoveoption") }
+  {szRemoveGPOKey, _T("scremoveoption") },
+  {szEIDGPOKey, _T("AutoLogonOnCardInsert") }
 };
 
 DWORD GetPolicyValue( GPOPolicy Policy)
@@ -238,4 +240,4 @@ BOOL SetPolicyValue(GPOPolicy Policy, DWORD dwValue)
 				MyGPOInfo[Policy].Value, REG_DWORD, &dwValue,sizeof(dwValue));
 	}
 	return fReturn;
-}
+}

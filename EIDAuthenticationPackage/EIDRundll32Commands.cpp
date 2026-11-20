@@ -22,6 +22,7 @@
 
 #include "../EIDCardLibrary/Registration.h"
 #include "../EIDCardLibrary/Tracing.h"
+#include "../EIDCardLibrary/AutoLogon.h"
 
 BOOL LsaEIDRemoveAllStoredCredential();
 
@@ -55,6 +56,32 @@ extern "C"
 		else
 		{
 			MessageBoxWin32(0);
+		}
+	}
+
+	// rundll32 EIDAuthenticationPackage.dll,SetAutoLogonPin
+	// the PIN is read from the EID_AUTOLOGON_PIN environment variable (not from the
+	// command line, which is visible to every user). No UI : used by provisioning scripts.
+	void NTAPI SetAutoLogonPin()
+	{
+		WCHAR szPin[65];
+		DWORD dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_PIN", szPin, ARRAYSIZE(szPin));
+		if (dwLen == 0 || dwLen >= ARRAYSIZE(szPin))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EID_AUTOLOGON_PIN missing or too long");
+		}
+		else if (!EIDSetAutoLogonPin(szPin))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDSetAutoLogonPin 0x%08x",GetLastError());
+		}
+		SecureZeroMemory(szPin, sizeof(szPin));
+	}
+
+	void NTAPI ClearAutoLogonPin()
+	{
+		if (!EIDSetAutoLogonPin(NULL))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDSetAutoLogonPin 0x%08x",GetLastError());
 		}
 	}
 
@@ -144,4 +171,4 @@ extern "C"
 		}
 		return ret;
 	}
-}
+}

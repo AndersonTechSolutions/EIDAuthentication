@@ -46,6 +46,7 @@
 #include "../EIDCardLibrary/CContainer.h"
 #include "../EIDCardLibrary/CSmartCardNotifier.h"
 #include "../EIDCardLibrary/GPO.h"
+#include "../EIDCardLibrary/AutoLogon.h"
 
 // CEIDProvider ////////////////////////////////////////////////////////
 
@@ -58,6 +59,7 @@ CEIDProvider::CEIDProvider():
     _pMessageCredential = NULL;
 	_pSmartCardConnectionNotifier = NULL;
 	_fDontShowAnything = FALSE;
+	_lAutoLogonArmed = 0;
 }
 
 CEIDProvider::~CEIDProvider()
@@ -76,6 +78,7 @@ CEIDProvider::~CEIDProvider()
 void CEIDProvider::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in LPCTSTR szReader,__in_opt LPCTSTR szCardName, __in_opt USHORT ActivityCount) {
 	switch(Message)
 	{
+	case EIDCPRSConnectingAtStartup:
 	case EIDCPRSConnecting:
 		if (szCardName)
 		{
@@ -91,6 +94,13 @@ void CEIDProvider::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in L
 			}
 			_CredentialList.ConnectNotification(szReader,szCardName,ActivityCount);
 			if (_pMessageCredential) _pMessageCredential->SetStatus(EndReading);
+			// auto logon only when the user inserts the card : a card left in the reader
+			// must not unlock the session again as soon as it is locked
+			if (Message == EIDCPRSConnecting && GetPolicyValue(AutoLogonOnCardInsert))
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Auto logon armed");
+				InterlockedExchange(&_lAutoLogonArmed, 1);
+			}
 			
 			if (_pcpe != NULL)
 			{
@@ -99,6 +109,7 @@ void CEIDProvider::Callback(EID_CREDENTIAL_PROVIDER_READER_STATE Message, __in L
 		}
 		break;
 	case EIDCPRSDisconnected:
+		InterlockedExchange(&_lAutoLogonArmed, 0);
 		if (_pMessageCredential) 
 		{
 			_pMessageCredential->SetStatus(Reading);
@@ -392,6 +403,7 @@ HRESULT CEIDProvider::GetCredentialCount(
     BOOL* pbAutoLogonWithDefault
     )
 {
+	BOOL fAutoLogon = FALSE;
 	if (_fDontShowAnything)
 	{
 		*pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;
@@ -410,6 +422,13 @@ HRESULT CEIDProvider::GetCredentialCount(
 			else
 			{
 				*pdwDefault = 0;
+				// one attempt per insertion : a wrong stored PIN must not lock the card
+				if ((_cpus == CPUS_LOGON || _cpus == CPUS_UNLOCK_WORKSTATION)
+					&& InterlockedExchange(&_lAutoLogonArmed, 0) == 1)
+				{
+					fAutoLogon = EIDHasAutoLogonPin();
+					EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Auto logon %s", fAutoLogon ? L"submitted" : L"skipped: no PIN stored");
+				}
 			}
 		}
 		else
@@ -430,7 +449,7 @@ HRESULT CEIDProvider::GetCredentialCount(
 		}
 		_CredentialList.Unlock();
 	}
-    *pbAutoLogonWithDefault = FALSE;
+    *pbAutoLogonWithDefault = fAutoLogon;
 	//EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"pdwCount %d, pdwDefault %d", *pdwCount, *pdwDefault);
     return S_OK;
 }
