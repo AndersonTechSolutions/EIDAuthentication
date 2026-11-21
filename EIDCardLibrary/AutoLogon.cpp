@@ -209,6 +209,7 @@ VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin)
 	{
 		return;
 	}
+	BOOL fChanged = FALSE;
 	// write only when it changed (the PIN can come from the secret itself)
 	if (RetrievePin(dwRid, &szStoredPin))
 	{
@@ -219,9 +220,93 @@ VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin)
 		{
 			return;
 		}
+		fChanged = TRUE;
 	}
 	if (!StorePin(dwRid, szPin))
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to learn the PIN of rid 0x%x : 0x%08x", dwRid, GetLastError());
+		return;
 	}
+	EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_LEARNT,
+		L"Saved the tap sign-in PIN of account RID 0x%X after a PIN sign-in (%s).",
+		dwRid, fChanged ? L"the PIN changed" : L"first PIN sign-in on this computer");
+}
+
+BOOL EIDIsAutoLogonPinStored(__in DWORD dwRid)
+{
+	PWSTR szPin = NULL;
+	if (!RetrievePin(dwRid, &szPin))
+	{
+		return FALSE;
+	}
+	SecureZeroMemory(szPin, wcslen(szPin) * sizeof(WCHAR));
+	EIDFree(szPin);
+	return TRUE;
+}
+
+BOOL EIDForgetUserAutoLogonPin(__in DWORD dwRid)
+{
+	if (!dwRid || !EIDIsAutoLogonPinStored(dwRid))
+	{
+		return FALSE;
+	}
+	return StorePin(dwRid, NULL);
+}
+
+#define EID_EVENT_KEY L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\" EID_EVENT_SOURCE
+// no message file of our own : the one of .NET (part of Windows) formats every event id as "%1"
+#define EID_EVENT_MESSAGE_FILE L"%SystemRoot%\\Microsoft.NET\\Framework64\\v4.0.30319\\EventLogMessages.dll"
+
+VOID EIDAuditEvent(__in WORD wType, __in DWORD dwEventId, __in PCWSTR szFormat, ...)
+{
+	WCHAR szMessage[512];
+	va_list ap;
+	va_start(ap, szFormat);
+	_vsnwprintf_s(szMessage, ARRAYSIZE(szMessage), _TRUNCATE, szFormat, ap);
+	va_end(ap);
+	HANDLE hEventLog = RegisterEventSourceW(NULL, EID_EVENT_SOURCE);
+	if (!hEventLog)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by RegisterEventSource", GetLastError());
+		return;
+	}
+	LPCWSTR rgszStrings[1] = {szMessage};
+	if (!ReportEventW(hEventLog, wType, 0, dwEventId, NULL, 1, 0, rgszStrings, NULL))
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by ReportEvent", GetLastError());
+	}
+	DeregisterEventSource(hEventLog);
+}
+
+BOOL EIDRegisterEventSource()
+{
+	HKEY hKey = NULL;
+	DWORD dwTypes = EVENTLOG_ERROR_TYPE | EVENTLOG_WARNING_TYPE | EVENTLOG_INFORMATION_TYPE;
+	LONG lStatus = RegCreateKeyExW(HKEY_LOCAL_MACHINE, EID_EVENT_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL);
+	if (ERROR_SUCCESS == lStatus)
+	{
+		lStatus = RegSetValueExW(hKey, L"EventMessageFile", 0, REG_EXPAND_SZ, (PBYTE) EID_EVENT_MESSAGE_FILE, (DWORD) sizeof(EID_EVENT_MESSAGE_FILE));
+		if (ERROR_SUCCESS == lStatus)
+		{
+			lStatus = RegSetValueExW(hKey, L"TypesSupported", 0, REG_DWORD, (PBYTE) &dwTypes, sizeof(dwTypes));
+		}
+		RegCloseKey(hKey);
+	}
+	if (ERROR_SUCCESS != lStatus)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to register the event source 0x%08x", lStatus);
+	}
+	SetLastError(lStatus);
+	return ERROR_SUCCESS == lStatus;
+}
+
+BOOL EIDUnRegisterEventSource()
+{
+	LONG lStatus = RegDeleteKeyW(HKEY_LOCAL_MACHINE, EID_EVENT_KEY);
+	if (ERROR_FILE_NOT_FOUND == lStatus)
+	{
+		lStatus = ERROR_SUCCESS;
+	}
+	SetLastError(lStatus);
+	return ERROR_SUCCESS == lStatus;
 }

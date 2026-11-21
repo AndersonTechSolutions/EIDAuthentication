@@ -152,5 +152,6 @@ class CEIDCredential : public ICredentialProviderCredential
                                                                                         // _rgCredProvFieldDescriptors.
     ICredentialProviderCredentialEvents* _pCredProvCredentialEvents;           
 	CContainer* _pContainer;
+	BOOL _fAutoLogonPinUsed; // the last serialization used the stored PIN (tap sign-in)
 
 };

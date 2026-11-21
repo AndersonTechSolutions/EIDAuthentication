@@ -28,5 +28,20 @@ Kiosk mode: inserting an enrolled badge logs on (or unlocks) without typing the 
 - Only a card *inserted* while the logon/lock screen is shown triggers it; a card left in the reader does not unlock a session that was just locked.
 - One attempt per insertion, so a wrong stored PIN costs one PIN try, not the whole retry counter.
 - With a PIN stored, possession of the badge is enough to log on. Treat badges like keys.
+- Uninstalling removes every stored PIN.
+
+Audit trail: the Application log, source `EIDAuthentication`.
+
+| Event | Meaning |
+|---|---|
+| 1000 / 1001 | Tap sign-in or unlock succeeded / failed (account, card) |
+| 1002 / 1003 | Sign-in or unlock with a typed PIN succeeded / failed |
+| 1010 | PIN saved for an account (first PIN sign-in, or the PIN changed) |
+| 1011 | Saved PIN forgotten (refused by the card, or the card was unenrolled) |
+| 1020 | An administrator set or cleared a PIN |
+
+Admin script `Tools\eid-autologon-pin.ps1` (run as administrator):
+`-List` (which accounts have a saved PIN, never the PIN itself), `-Clear -User <name|*>`, `-SetStation`, `-ClearStation`, `-Events [-Last N]`.
+The rundll32 commands behind it are `ListAutoLogonPins` (output file in `EID_AUTOLOGON_OUT`) and `ClearUserAutoLogonPin` (account in `EID_AUTOLOGON_USER`); both need SYSTEM.
 
 Card readers held exclusively by another application at insertion (for example a badge service reading NDEF) are now waited for instead of being missed.

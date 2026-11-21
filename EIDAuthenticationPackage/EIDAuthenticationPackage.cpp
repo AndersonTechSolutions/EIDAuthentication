@@ -307,7 +307,11 @@ extern "C"
 				}
 				EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"Has Autorization for rid = 0x%x", pBuffer->dwRid);
 				fStatus = CStoredCredentialManager::Instance()->RemoveStoredCredential(pBuffer->dwRid);
-				EIDSetUserAutoLogonPin(pBuffer->dwRid, NULL);
+				if (EIDForgetUserAutoLogonPin(pBuffer->dwRid))
+				{
+					EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_FORGOTTEN,
+						L"Forgot the tap sign-in PIN of account RID 0x%X: the card was unenrolled.", pBuffer->dwRid);
+				}
 				if (!fStatus)
 				{
 					pBuffer->dwError = GetLastError();
@@ -863,7 +867,11 @@ extern "C"
 					case SCARD_W_WRONG_CHV:
 						// the PIN learnt for auto logon may be outdated : forget it so that
 						// the next insertions don't consume the remaining attempts
-						EIDSetUserAutoLogonPin(dwRid, NULL);
+						if (EIDForgetUserAutoLogonPin(dwRid))
+						{
+							EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_PIN_FORGOTTEN,
+								L"Forgot the tap sign-in PIN of account RID 0x%X: the card refused it. The next sign-in with the PIN saves it again.", dwRid);
+						}
 						*SubStatus = 0xFFFFFFFF;
 						return STATUS_SMARTCARD_WRONG_PIN;
 					case SCARD_W_CHV_BLOCKED:

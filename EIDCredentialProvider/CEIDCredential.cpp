@@ -57,6 +57,7 @@ CEIDCredential::CEIDCredential(CContainer* container):
     ZeroMemory(_rgFieldStatePairs, sizeof(_rgFieldStatePairs));
     ZeroMemory(_rgFieldStrings, sizeof(_rgFieldStrings));
 	_pContainer = container;
+	_fAutoLogonPinUsed = FALSE;
 	Initialize();
 }
 
@@ -591,6 +592,7 @@ HRESULT CEIDCredential::GetSerialization(
             EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Using the auto logon PIN");
             pwzPin = pwzAutoLogonPin;
         }
+        _fAutoLogonPinUsed = (pwzAutoLogonPin != NULL);
 
         hr = ProtectIfNecessaryAndCopyPassword(pwzPin, _cpus, _dwFlags,  &pwzProtectedPin);
         if (pwzAutoLogonPin)
@@ -690,6 +692,30 @@ static const REPORT_RESULT_STATUS_INFO s_rgLogonStatusInfo[] =
     { STATUS_ACCOUNT_RESTRICTION, STATUS_ACCOUNT_DISABLED, CPSI_WARNING },
 };
 
+// audit trail of the sign-ins made with a card : who, which card, tap or typed PIN
+static VOID AuditLogonResult(__in CContainer* pContainer, __in CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, __in BOOL fTap, __in NTSTATUS ntsStatus)
+{
+	PTSTR szAccount = GetUsernameFromRid(pContainer->GetRid());
+	PCWSTR szMethod = fTap ? L"Tap" : L"PIN";
+	PCWSTR szAction = (cpus == CPUS_UNLOCK_WORKSTATION ? L"unlock" : (cpus == CPUS_LOGON ? L"sign-in" : L"credential prompt"));
+	if (ntsStatus == STATUS_SUCCESS)
+	{
+		EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, fTap ? EID_EVENT_LOGON_TAP_OK : EID_EVENT_LOGON_PIN_OK,
+			L"%s %s succeeded.\r\nAccount: %s\r\nCard: %s",
+			szMethod, szAction, szAccount ? szAccount : L"(unknown)", pContainer->GetUserNameW());
+	}
+	else
+	{
+		EIDAuditEvent(EVENTLOG_WARNING_TYPE, fTap ? EID_EVENT_LOGON_TAP_FAILED : EID_EVENT_LOGON_PIN_FAILED,
+			L"%s %s failed with status 0x%08X.\r\nAccount: %s\r\nCard: %s",
+			szMethod, szAction, ntsStatus, szAccount ? szAccount : L"(unknown)", pContainer->GetUserNameW());
+	}
+	if (szAccount)
+	{
+		EIDFree(szAccount);
+	}
+}
+
 // ReportResult is completely optional.  Its purpose is to allow a credential to customize the string
 // and the icon displayed in the case of a logon failure.  For example, we have chosen to 
 // customize the error shown in the case of bad username/Pin and in the case of the account
@@ -704,6 +730,9 @@ HRESULT CEIDCredential::ReportResult(
 {
     if (ppwszOptionalStatusText) *ppwszOptionalStatusText = L"Unknow Error";
     if (pcpsiOptionalStatusIcon) *pcpsiOptionalStatusIcon = CPSI_NONE;
+
+	AuditLogonResult(_pContainer, _cpus, _fAutoLogonPinUsed, ntsStatus);
+	_fAutoLogonPinUsed = FALSE;
 	
 	if (ntsStatus == STATUS_SUCCESS)
 	{
