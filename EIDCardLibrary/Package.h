@@ -19,6 +19,23 @@ BOOL IsEIDPackageAvailable();
 
 HRESULT LsaInitString(PSTRING pszDestinationString, PCSTR pszSourceString);
 
+#ifdef __credentialprovider_h__
+//v0.3.0 : standard password logon (MSV1_0 through Negotiate)
+HRESULT KerbInteractiveUnlockLogonInit(
+    PWSTR pwzDomain,
+    PWSTR pwzUsername,
+    PWSTR pwzPassword,
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
+    KERB_INTERACTIVE_UNLOCK_LOGON* pkiul
+    );
+
+HRESULT KerbInteractiveUnlockLogonPack(
+    const KERB_INTERACTIVE_UNLOCK_LOGON& rkiulIn,
+    BYTE** prgb,
+    DWORD* pcb
+    );
+#endif
+
 //get the authentication package that will be used for our logon attempt
 HRESULT RetrieveNegotiateAuthPackage(
     ULONG * pulAuthPackage

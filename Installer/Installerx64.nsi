@@ -54,12 +54,14 @@ Section "Core" SecCore
   
   ;ADD YOUR OWN FILES HERE...
   ${DisableX64FSRedirection}
+  ; v0.3.0 : nothing loads into lsass. EIDAuthenticationPackage.dll only hosts the
+  ; rundll32 admin commands; the notification package and the wizard are gone
+  ; (cards are enrolled at the first sign-in with them)
   FILE "..\x64\Release\EIDAuthenticationPackage.dll"
   FILE "..\x64\Release\EIDCredentialProvider.dll"
-  FILE "..\x64\Release\EIDPasswordChangeNotification.dll"
-  FILE "..\x64\Release\EIDConfigurationWizard.exe"
-
-  CreateShortcut "$DESKTOP\EID Authentication Configuration.lnk" "$INSTDIR\EIDConfigurationWizard.exe"
+  Delete /REBOOTOK "$INSTDIR\EIDPasswordChangeNotification.dll"
+  Delete /REBOOTOK "$INSTDIR\EIDConfigurationWizard.exe"
+  Delete "$DESKTOP\EID Authentication Configuration.lnk"
 
   ;Create uninstaller
   WriteUninstaller "$SYSDIR\EIDUninstall.exe"

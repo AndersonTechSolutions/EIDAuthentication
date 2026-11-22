@@ -19,6 +19,7 @@
 #include "../EIDCardLibrary/CertificateUtilities.h"
 #include "../EIDCardLibrary/Package.h"
 #include "../EIDCardLibrary/Tracing.h"
+#include "../EIDCardLibrary/GPO.h"
 #include <lm.h>
 #include <WinCred.h>
 
@@ -328,37 +329,46 @@ BOOL CContainerHolderFactory<T>::CreateItemFromCertificateBlob(__in HCRYPTPROV h
 		{
 			// check if the user has an account to this workstation
 			DWORD dwRid = LsaEIDGetRIDFromStoredCredential(pCertContext);	
-			if (!dwRid)
+			if (!dwRid && !GetPolicyValue(DisableEnrollAtLogon))
+			{
+				// trusted card not enrolled yet : the tile enrolls it at the first logon
+				// with the Windows password (the account is typed, checked by the logon)
+				EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Not enrolled : enrollment tile");
+			}
+			else if (!dwRid)
 			{
 				dwError = GetLastError();
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"HasAccountOnCurrentComputer 0x%08x",dwError);
 				__leave;
 			}
-			szUsername = GetUsernameFromRid(dwRid);
-			if (!szUsername)
+			else
 			{
-				dwError = GetLastError();
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetUsernameFromRid 0x%08x",dwError);
-				__leave;
-			}
-			if (((_dwFlags & CREDUIWIN_ENUMERATE_CURRENT_USER) || (_cpus == CPUS_UNLOCK_WORKSTATION)))
-			{
-				fSuccess = IsCurrentUser(szUsername);
-				if (!fSuccess)
+				szUsername = GetUsernameFromRid(dwRid);
+				if (!szUsername)
 				{
 					dwError = GetLastError();
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"IsCurrentUser 0x%08x",dwError);
+					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetUsernameFromRid 0x%08x",dwError);
 					__leave;
 				}
-			}
-			if ((_dwFlags & CREDUIWIN_ENUMERATE_ADMINS))
-			{
-				fSuccess = IsAdmin(szUsername);
-				if (!fSuccess)
+				if (((_dwFlags & CREDUIWIN_ENUMERATE_CURRENT_USER) || (_cpus == CPUS_UNLOCK_WORKSTATION)))
 				{
-					dwError = GetLastError();
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"IsAdmin 0x%08x",dwError);
-					__leave;
+					fSuccess = IsCurrentUser(szUsername);
+					if (!fSuccess)
+					{
+						dwError = GetLastError();
+						EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"IsCurrentUser 0x%08x",dwError);
+						__leave;
+					}
+				}
+				if ((_dwFlags & CREDUIWIN_ENUMERATE_ADMINS))
+				{
+					fSuccess = IsAdmin(szUsername);
+					if (!fSuccess)
+					{
+						dwError = GetLastError();
+						EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"IsAdmin 0x%08x",dwError);
+						__leave;
+					}
 				}
 			}
 		}

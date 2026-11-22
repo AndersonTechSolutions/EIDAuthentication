@@ -28,6 +28,8 @@
 #include "../EIDCardLibrary/AutoLogon.h"
 
 BOOL LsaEIDRemoveAllStoredCredential();
+BOOL LsaEIDRemoveStoredCredential(__in_opt PWSTR szUsername);
+BOOL LsaEIDHasStoredCredential(__in_opt PWSTR szUsername);
 DWORD GetRidFromUsername(LPTSTR szUsername);
 
 typedef VOID (*PFN_LOCAL_ACCOUNT)(__in PCWSTR szName, __in DWORD dwRid, __in_opt PVOID pContext);
@@ -86,21 +88,28 @@ static VOID WriteOutputLine(__in HANDLE hOut, __in PCWSTR szFormat, ...)
 	}
 }
 
-// "saved", "none" or the error which prevented the check
+// "<account> TAB <rid> TAB saved|none|error TAB card|-|stale"
 static VOID WritePinState(__in HANDLE hOut, __in PCWSTR szName, __in DWORD dwRid)
 {
+	WCHAR szPin[32];
+	PCWSTR szCard = L"-";
 	if (EIDIsAutoLogonPinStored(dwRid))
 	{
-		WriteOutputLine(hOut, L"%s\t0x%X\tsaved", szName, dwRid);
+		wcscpy_s(szPin, ARRAYSIZE(szPin), L"saved");
 	}
 	else if (GetLastError() == ERROR_FILE_NOT_FOUND)
 	{
-		WriteOutputLine(hOut, L"%s\t0x%X\tnone", szName, dwRid);
+		wcscpy_s(szPin, ARRAYSIZE(szPin), L"none");
 	}
 	else
 	{
-		WriteOutputLine(hOut, L"%s\t0x%X\terror 0x%08X", szName, dwRid, GetLastError());
+		swprintf_s(szPin, ARRAYSIZE(szPin), L"error 0x%08X", GetLastError());
 	}
+	if (dwRid && LsaEIDHasStoredCredential((PWSTR) szName))
+	{
+		szCard = EIDIsPasswordStale(dwRid) ? L"card (password changed)" : L"card";
+	}
+	WriteOutputLine(hOut, L"%s\t0x%X\t%s\t%s", szName, dwRid, szPin, szCard);
 }
 
 static VOID ListAccount(__in PCWSTR szName, __in DWORD dwRid, __in_opt PVOID pContext)
@@ -123,11 +132,12 @@ extern "C"
 	
 	void NTAPI DllRegister()
 	{
-		EIDAuthenticationPackageDllRegister();
+		// v0.3.0 : nothing in lsass anymore (LSA protection can stay on). An upgrade from
+		// v0.2.0 removes the authentication and notification packages and the wizard.
+		EIDAuthenticationPackageDllUnRegister();
+		EIDPasswordChangeNotificationDllUnRegister();
+		EIDConfigurationWizardDllUnRegister();
 		EIDCredentialProviderDllRegister();
-		EIDPasswordChangeNotificationDllRegister();
-		EIDConfigurationWizardDllRegister();
-		RegisterTheSecurityPackage();
 		EIDRegisterEventSource();
 	}
 
@@ -137,7 +147,6 @@ extern "C"
 		EIDCredentialProviderDllUnRegister();
 		EIDPasswordChangeNotificationDllUnRegister();
 		EIDConfigurationWizardDllUnRegister();
-		UnRegisterTheSecurityPackage();
 		// the PINs stored for the tap sign-in must not outlive the program
 		ForEachLocalAccount(ClearAccount, NULL);
 		EIDSetAutoLogonPin(NULL);
@@ -206,6 +215,32 @@ extern "C"
 		CloseHandle(hOut);
 	}
 
+	// rundll32 EIDAuthenticationPackage.dll,RemoveUserCard
+	// unenrolls the card of the account named by EID_AUTOLOGON_USER and forgets its PIN (offboarding)
+	void NTAPI RemoveUserCard()
+	{
+		WCHAR szUser[UNLEN+1];
+		DWORD dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_USER", szUser, ARRAYSIZE(szUser));
+		if (dwLen == 0 || dwLen >= ARRAYSIZE(szUser))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EID_AUTOLOGON_USER missing or too long");
+			return;
+		}
+		DWORD dwRid = GetRidFromUsername(szUser);
+		if (!dwRid)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unknown account %s",szUser);
+			return;
+		}
+		ClearAccount(szUser, dwRid, NULL);
+		EIDSetPasswordStale(dwRid, FALSE);
+		if (LsaEIDRemoveStoredCredential(szUser))
+		{
+			EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_ADMIN,
+				L"An administrator removed the card of %s (RID 0x%X).", szUser, dwRid);
+		}
+	}
+
 	// rundll32 EIDAuthenticationPackage.dll,ClearUserAutoLogonPin
 	// clears the PIN learnt for the account named by EID_AUTOLOGON_USER ("*" : every local account).
 	// The next sign-in of the user with the PIN saves it again (offboarding : unenroll the card too).
@@ -255,11 +290,7 @@ extern "C"
 		int ret = ERROR_INSTALL_FAILURE;
 		__try
 		{
-			if (!RegisterTheSecurityPackage())
-			{
-				dwError = GetLastError();
-				__leave;
-			}
+			// v0.3.0 : no security package to register
 			ret = ERROR_SUCCESS;
 		}
 		__finally

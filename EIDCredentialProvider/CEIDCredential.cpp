@@ -35,6 +35,7 @@
 #include "../EIDCardLibrary/Package.h"
 #include "../EIDCardLibrary/GPO.h"
 #include "../EIDCardLibrary/AutoLogon.h"
+#include "../EIDCardLibrary/StoredCredentialManagement.h"
 
 #include <CodeAnalysis/warnings.h>
 #pragma warning(push)
@@ -58,11 +59,33 @@ CEIDCredential::CEIDCredential(CContainer* container):
     ZeroMemory(_rgFieldStrings, sizeof(_rgFieldStrings));
 	_pContainer = container;
 	_fAutoLogonPinUsed = FALSE;
+	_fPasswordFromCard = FALSE;
+	_szPendingAccount = NULL;
+	_szPendingPassword = NULL;
+	_szPendingPin = NULL;
+	_dwRid = 0;
+	_eMode = EidTileLogon;
 	Initialize();
+}
+
+// frees a string which held a secret
+static VOID SecureFreeString(__inout PWSTR* ppwsz)
+{
+	if (*ppwsz)
+	{
+		SecureZeroMemory(*ppwsz, wcslen(*ppwsz) * sizeof(WCHAR));
+		CoTaskMemFree(*ppwsz);
+		*ppwsz = NULL;
+	}
 }
 
 CEIDCredential::~CEIDCredential()
 {
+	ClearPending();
+	if (_rgFieldStrings[SFI_PASSWORD])
+	{
+		SecureZeroMemory(_rgFieldStrings[SFI_PASSWORD], wcslen(_rgFieldStrings[SFI_PASSWORD]) * sizeof(WCHAR));
+	}
 	if (_pContainer)
 	{
 		delete _pContainer;
@@ -116,6 +139,14 @@ HRESULT CEIDCredential::Initialize()
     }
 	if (SUCCEEDED(hr))
     {
+        hr = SHStrDupW(L"", &_rgFieldStrings[SFI_ACCOUNT]);
+    }
+	if (SUCCEEDED(hr))
+    {
+        hr = SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]);
+    }
+	if (SUCCEEDED(hr))
+    {
         HINSTANCE Handle = LoadLibrary(TEXT("SmartcardCredentialProvider.dll"));
 		WCHAR Message[256] = L"";
 		if (Handle)
@@ -139,7 +170,107 @@ HRESULT CEIDCredential::Initialize()
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"not SUCCEEDED");
 	}
+	// card not enrolled on this computer, or stored password refused by Windows last time
+	_dwRid = _pContainer->GetRid();
+	SetMode(!_dwRid ? EidTileEnroll : (EIDIsPasswordStale(_dwRid) ? EidTileStalePassword : EidTileLogon));
     return S_OK;
+}
+
+// shows the Windows user name and password fields when they must be typed
+VOID CEIDCredential::SetMode(__in EID_TILE_MODE eMode)
+{
+	PCWSTR szMessage = NULL;
+	_eMode = eMode;
+	_rgFieldStatePairs[SFI_ACCOUNT].cpfs = (eMode == EidTileEnroll ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN);
+	_rgFieldStatePairs[SFI_ACCOUNT].cpfis = (eMode == EidTileEnroll ? CPFIS_FOCUSED : CPFIS_NONE);
+	_rgFieldStatePairs[SFI_PASSWORD].cpfs = (eMode != EidTileLogon ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN);
+	_rgFieldStatePairs[SFI_PASSWORD].cpfis = (eMode == EidTileStalePassword ? CPFIS_FOCUSED : CPFIS_NONE);
+	_rgFieldStatePairs[SFI_PIN].cpfis = (eMode == EidTileLogon ? CPFIS_FOCUSED : CPFIS_NONE);
+	if (eMode == EidTileEnroll)
+	{
+		szMessage = L"First sign-in with this card on this PC: type your Windows user name, password and card PIN once.";
+	}
+	else if (eMode == EidTileStalePassword)
+	{
+		szMessage = L"Your Windows password changed: type the new one once.";
+	}
+	if (szMessage)
+	{
+		CoTaskMemFree(_rgFieldStrings[SFI_MESSAGE]);
+		_rgFieldStrings[SFI_MESSAGE] = NULL;
+		SHStrDupW(szMessage, &_rgFieldStrings[SFI_MESSAGE]);
+	}
+	if (_pCredProvCredentialEvents)
+	{
+		_pCredProvCredentialEvents->SetFieldState(this, SFI_ACCOUNT, _rgFieldStatePairs[SFI_ACCOUNT].cpfs);
+		_pCredProvCredentialEvents->SetFieldState(this, SFI_PASSWORD, _rgFieldStatePairs[SFI_PASSWORD].cpfs);
+		if (szMessage)
+		{
+			_pCredProvCredentialEvents->SetFieldString(this, SFI_MESSAGE, _rgFieldStrings[SFI_MESSAGE]);
+		}
+	}
+}
+
+VOID CEIDCredential::ClearPending()
+{
+	SecureFreeString(&_szPendingPassword);
+	SecureFreeString(&_szPendingPin);
+	CoTaskMemFree(_szPendingAccount);
+	_szPendingAccount = NULL;
+}
+
+// the logon with the typed password succeeded : store it, wrapped with the public key of the card
+VOID CEIDCredential::CompletePending()
+{
+	CStoredCredentialManager* manager = CStoredCredentialManager::Instance();
+	PCCERT_CONTEXT pCertContext = _pContainer->GetCertificate();
+	if (_eMode == EidTileEnroll)
+	{
+		DWORD dwRid = GetRidFromUsername(_szPendingAccount);
+		PWSTR szCheck = NULL;
+		if (!dwRid)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetRidFromUsername %s 0x%08x", _szPendingAccount, GetLastError());
+			return;
+		}
+		if (!manager->CreateCredential(dwRid, pCertContext, _szPendingPassword, 0, _pContainer->GetKeySpec() == AT_KEYEXCHANGE, FALSE))
+		{
+			EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_CARD_ENROLLED,
+				L"Unable to enroll the card %s for %s: error 0x%08X.", _pContainer->GetUserNameW(), _szPendingAccount, GetLastError());
+			return;
+		}
+		// the PIN was not checked before (the PIV cards are not checked by the minidriver test) :
+		// decrypting the stored password proves both the card and the PIN
+		if (!manager->GetPassword(dwRid, pCertContext, _szPendingPin, &szCheck))
+		{
+			DWORD dwError = GetLastError();
+			manager->RemoveStoredCredential(dwRid);
+			EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_CARD_ENROLLED,
+				L"Did not enroll the card %s for %s: the card refused the PIN or the key (error 0x%08X).", _pContainer->GetUserNameW(), _szPendingAccount, dwError);
+			return;
+		}
+		SecureZeroMemory(szCheck, wcslen(szCheck) * sizeof(WCHAR));
+		EIDFree(szCheck);
+		EIDSetPasswordStale(dwRid, FALSE);
+		EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_CARD_ENROLLED,
+			L"Enrolled the card %s for %s (RID 0x%X) at the first sign-in with it.", _pContainer->GetUserNameW(), _szPendingAccount, dwRid);
+		EIDLearnUserAutoLogonPin(dwRid, _szPendingPin);
+		_dwRid = dwRid;
+		SetMode(EidTileLogon);
+	}
+	else if (_eMode == EidTileStalePassword)
+	{
+		if (!manager->UpdateCredential(_dwRid, _szPendingPassword, 0))
+		{
+			EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_PASSWORD_UPDATED,
+				L"Unable to update the stored Windows password of %s: error 0x%08X.", _szPendingAccount, GetLastError());
+			return;
+		}
+		EIDSetPasswordStale(_dwRid, FALSE);
+		EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PASSWORD_UPDATED,
+			L"Updated the stored Windows password of %s (RID 0x%X) after a password change.", _szPendingAccount, _dwRid);
+		SetMode(EidTileLogon);
+	}
 }
 
 CContainer* CEIDCredential::GetContainer()
@@ -197,6 +328,16 @@ HRESULT CEIDCredential::SetSelected(BOOL* pbAutoLogon)
 HRESULT CEIDCredential::SetDeselected()
 {
     HRESULT hr = S_OK;
+	if (_rgFieldStrings[SFI_PASSWORD])
+	{
+		SecureZeroMemory(_rgFieldStrings[SFI_PASSWORD], wcslen(_rgFieldStrings[SFI_PASSWORD]) * sizeof(WCHAR));
+		CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
+		_rgFieldStrings[SFI_PASSWORD] = NULL;
+		if (SUCCEEDED(SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD])) && _pCredProvCredentialEvents)
+		{
+			_pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, _rgFieldStrings[SFI_PASSWORD]);
+		}
+	}
 	if (_rgFieldStrings[SFI_PIN])
     {
         // CoTaskMemFree (below) deals with NULL, but StringCchLength does not.
@@ -563,8 +704,11 @@ HRESULT EIDUnlockLogonInit(
 // (the RID comes from the stored credential : the username field holds the certificate name)
 BOOL CEIDCredential::HasAutoLogonPin()
 {
-	return EIDHasAutoLogonPin(_pContainer->GetRid());
+	// nothing to submit by itself when a password must be typed
+	return _eMode == EidTileLogon && EIDHasAutoLogonPin(_dwRid);
 }
+
+static VOID AuditLogonResult(__in CContainer* pContainer, __in CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, __in BOOL fTap, __in NTSTATUS ntsStatus);
 
 HRESULT CEIDCredential::GetSerialization(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
@@ -573,108 +717,208 @@ HRESULT CEIDCredential::GetSerialization(
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     )
 {
-    UNREFERENCED_PARAMETER(ppwszOptionalStatusText);
-    UNREFERENCED_PARAMETER(pcpsiOptionalStatusIcon);
-    HRESULT hr;
-	
+    HRESULT hr = E_FAIL;
     WCHAR wsz[MAX_COMPUTERNAME_LENGTH+1];
     DWORD cch = ARRAYSIZE(wsz);
-    if (GetComputerNameW(wsz, &cch))
-    {
-        PWSTR pwzProtectedPin;
-        PWSTR pwzPin = _rgFieldStrings[SFI_PIN];
-        PWSTR pwzAutoLogonPin = NULL;
+    PWSTR pwzPin = _rgFieldStrings[SFI_PIN];
+    PWSTR pwzAutoLogonPin = NULL;
+    PWSTR pwzAccount = NULL;
+    PWSTR pwzPassword = NULL;
+    PWSTR pwzProtectedPassword = NULL;
+    PCWSTR szMissing = NULL;
 
-        // auto logon : the PIN field is empty, use the PIN stored for this computer
-        if ((pwzPin == NULL || pwzPin[0] == L'\0') && GetPolicyValue(AutoLogonOnCardInsert)
-            && EIDGetAutoLogonPin(_pContainer->GetRid(), &pwzAutoLogonPin))
+    *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+    ClearPending();
+    _fAutoLogonPinUsed = FALSE;
+    _fPasswordFromCard = FALSE;
+    __try
+    {
+        if (!GetComputerNameW(wsz, &cch))
+        {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetComputerNameW failed 0x%08x",hr);
+            __leave;
+        }
+        // auto logon : the PIN field is empty, use the PIN stored for this user (or this computer)
+        if ((pwzPin == NULL || pwzPin[0] == L'\0') && _eMode != EidTileEnroll && GetPolicyValue(AutoLogonOnCardInsert)
+            && EIDGetAutoLogonPin(_dwRid, &pwzAutoLogonPin))
         {
             EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Using the auto logon PIN");
             pwzPin = pwzAutoLogonPin;
+            _fAutoLogonPinUsed = TRUE;
         }
-        _fAutoLogonPinUsed = (pwzAutoLogonPin != NULL);
+        // the fields to type
+        if (_eMode == EidTileEnroll && (!_rgFieldStrings[SFI_ACCOUNT] || !_rgFieldStrings[SFI_ACCOUNT][0]))
+        {
+            szMissing = L"Type your Windows user name.";
+        }
+        else if (_eMode != EidTileLogon && (!_rgFieldStrings[SFI_PASSWORD] || !_rgFieldStrings[SFI_PASSWORD][0]))
+        {
+            szMissing = L"Type your Windows password.";
+        }
+        else if (pwzPin == NULL || pwzPin[0] == L'\0')
+        {
+            szMissing = L"Type the PIN of the card.";
+        }
+        if (szMissing)
+        {
+            if (ppwszOptionalStatusText) SHStrDupW(szMissing, ppwszOptionalStatusText);
+            if (pcpsiOptionalStatusIcon) *pcpsiOptionalStatusIcon = CPSI_WARNING;
+            *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+            hr = S_OK;
+            __leave;
+        }
 
-        hr = ProtectIfNecessaryAndCopyPassword(pwzPin, _cpus, _dwFlags,  &pwzProtectedPin);
+        if (_eMode == EidTileEnroll)
+        {
+            // "COMPUTER\\user" or ".\\user" : local accounts only
+            PWSTR szAccount = wcsrchr(_rgFieldStrings[SFI_ACCOUNT], L'\\');
+            hr = SHStrDupW(szAccount ? szAccount + 1 : _rgFieldStrings[SFI_ACCOUNT], &pwzAccount);
+            if (SUCCEEDED(hr))
+            {
+                hr = SHStrDupW(_rgFieldStrings[SFI_PASSWORD], &pwzPassword);
+            }
+        }
+        else
+        {
+            PTSTR szAccount = GetUsernameFromRid(_dwRid);
+            if (!szAccount)
+            {
+                hr = HRESULT_FROM_WIN32(GetLastError());
+                EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetUsernameFromRid 0x%08x",hr);
+                __leave;
+            }
+            hr = SHStrDupW(szAccount, &pwzAccount);
+            EIDFree(szAccount);
+            if (SUCCEEDED(hr) && _eMode == EidTileStalePassword)
+            {
+                hr = SHStrDupW(_rgFieldStrings[SFI_PASSWORD], &pwzPassword);
+            }
+            else if (SUCCEEDED(hr))
+            {
+                // the card decrypts the stored password (this checks the PIN)
+                PWSTR szPassword = NULL;
+                if (!CStoredCredentialManager::Instance()->GetPassword(_dwRid, _pContainer->GetCertificate(), pwzPin, &szPassword))
+                {
+                    DWORD dwError = GetLastError();
+                    NTSTATUS ntsStatus;
+                    EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetPassword 0x%08x", dwError);
+                    switch(dwError)
+                    {
+                        case SCARD_W_WRONG_CHV:
+                            // the PIN learnt for auto logon may be outdated : forget it so that
+                            // the next insertions don't consume the remaining attempts
+                            if (EIDForgetUserAutoLogonPin(_dwRid))
+                            {
+                                EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_PIN_FORGOTTEN,
+                                    L"Forgot the tap sign-in PIN of account RID 0x%X: the card refused it. The next sign-in with the PIN saves it again.", _dwRid);
+                            }
+                            ntsStatus = STATUS_SMARTCARD_WRONG_PIN;
+                            break;
+                        case SCARD_W_CHV_BLOCKED:
+                            ntsStatus = STATUS_SMARTCARD_CARD_BLOCKED;
+                            break;
+                        case NTE_BAD_KEYSET_PARAM:
+                        case NTE_BAD_PUBLIC_KEY:
+                        case NTE_BAD_KEYSET:
+                            ntsStatus = STATUS_SMARTCARD_NO_KEYSET;
+                            break;
+                        default:
+                            ntsStatus = STATUS_SMARTCARD_IO_ERROR;
+                            break;
+                    }
+                    AuditLogonResult(_pContainer, _cpus, _fAutoLogonPinUsed, ntsStatus);
+                    FormatStatus(ntsStatus, (NTSTATUS) 0xFFFFFFFF, ppwszOptionalStatusText, pcpsiOptionalStatusIcon);
+                    if (_pCredProvCredentialEvents)
+                    {
+                        _pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
+                    }
+                    *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+                    hr = S_OK;
+                    __leave;
+                }
+                hr = SHStrDupW(szPassword, &pwzPassword);
+                SecureZeroMemory(szPassword, wcslen(szPassword) * sizeof(WCHAR));
+                EIDFree(szPassword);
+                _fPasswordFromCard = TRUE;
+                // the PIN is right : remember it for the auto logon of this user (if enabled)
+                if (!_fAutoLogonPinUsed)
+                {
+                    EIDLearnUserAutoLogonPin(_dwRid, pwzPin);
+                }
+            }
+        }
+        if (FAILED(hr))
+        {
+            __leave;
+        }
+        // a typed password is stored (enrollment) or wrapped again (changed password)
+        // only if the logon proves it : see ReportResult
+        if (_eMode != EidTileLogon)
+        {
+            hr = SHStrDupW(pwzPassword, &_szPendingPassword);
+            if (SUCCEEDED(hr)) hr = SHStrDupW(pwzPin, &_szPendingPin);
+            if (SUCCEEDED(hr)) hr = SHStrDupW(pwzAccount, &_szPendingAccount);
+            if (FAILED(hr))
+            {
+                __leave;
+            }
+        }
+
+        hr = ProtectIfNecessaryAndCopyPassword(pwzPassword, _cpus, _dwFlags, &pwzProtectedPassword);
+        if (FAILED(hr))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ProtectIfNecessaryAndCopyPassword not SUCCEEDED hr=0x%08x",hr);
+            __leave;
+        }
+        KERB_INTERACTIVE_UNLOCK_LOGON kiul;
+        hr = KerbInteractiveUnlockLogonInit(wsz, pwzAccount, pwzProtectedPassword, _cpus, &kiul);
+        if (FAILED(hr))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"KerbInteractiveUnlockLogonInit not SUCCEEDED hr=0x%08x",hr);
+            __leave;
+        }
+        hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
+        if (FAILED(hr))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"KerbInteractiveUnlockLogonPack not SUCCEEDED hr=0x%08x",hr);
+            __leave;
+        }
+        ULONG ulAuthPackage;
+        hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
+        if (FAILED(hr))
+        {
+            EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"RetrieveNegotiateAuthPackage not SUCCEEDED hr=0x%08x",hr);
+            SecureZeroMemory(pcpcs->rgbSerialization, pcpcs->cbSerialization);
+            CoTaskMemFree(pcpcs->rgbSerialization);
+            pcpcs->rgbSerialization = NULL;
+            pcpcs->cbSerialization = 0;
+            __leave;
+        }
+        pcpcs->ulAuthenticationPackage = ulAuthPackage;
+        pcpcs->clsidCredentialProvider = CLSID_CEIDProvider;
+        // LogonUI submits it
+        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+        EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"OK");
+    }
+    __finally
+    {
         if (pwzAutoLogonPin)
         {
             SecureZeroMemory(pwzAutoLogonPin, wcslen(pwzAutoLogonPin) * sizeof(WCHAR));
             EIDFree(pwzAutoLogonPin);
         }
-
-        if (SUCCEEDED(hr))
+        SecureFreeString(&pwzPassword);
+        SecureFreeString(&pwzProtectedPassword);
+        CoTaskMemFree(pwzAccount);
+        if (*pcpgsr != CPGSR_RETURN_CREDENTIAL_FINISHED)
         {
-            EID_INTERACTIVE_UNLOCK_LOGON kiul;
-			//KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-
-            // Initialize kiul with weak references to our credential.
-            hr = EIDUnlockLogonInit(wsz, _rgFieldStrings[SFI_USERNAME], pwzProtectedPin, _cpus,  &kiul);
-
-            if (SUCCEEDED(hr))
-            {
-                // We use EID_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
-                // EID_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
-                // as necessary.
-				PEID_SMARTCARD_CSP_INFO pCspInfo = _pContainer->GetCSPInfo();
-				if (pCspInfo)
-				{
-					hr = EIDUnlockLogonPack(kiul, pCspInfo, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
-					_pContainer->FreeCSPInfo(pCspInfo);
-
-					if (SUCCEEDED(hr))
-					{
-						ULONG ulAuthPackage;
-
-						hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-						if (SUCCEEDED(hr))
-						{
-							pcpcs->ulAuthenticationPackage = ulAuthPackage;
-							pcpcs->clsidCredentialProvider = CLSID_CEIDProvider;
-
-							// At this point the credential has created the serialized credential used for logon
-							// By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-							// that we have all the information we need and it should attempt to submit the 
-							// serialized credential.
-							*pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-						}
-						else
-						{
-							EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"RetrieveNegotiateAuthPackage not SUCCEEDED hr=0x%08x",hr);
-						}
-					}
-					else
-					{
-						EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDUnlockLogonPack not SUCCEEDED hr=0x%08x",hr);
-					}
-				}
-				else
-				{
-					EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"pCspInfo NULL");
-				}
-            }
-			else
-			{
-				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDUnlockLogonInit not SUCCEEDED hr=0x%08x",hr);
-			}
-            CoTaskMemFree(pwzProtectedPin);
+            ClearPending();
         }
-		else
-		{
-			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"ProtectIfNecessaryAndCopyPassword not SUCCEEDED hr=0x%08x",hr);
-		}
-    }
-    else
-    {
-        DWORD dwErr = GetLastError();
-        hr = HRESULT_FROM_WIN32(dwErr);
-		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"GetComputerNameW failed 0x%08x",dwErr);
     }
 	if (!SUCCEEDED(hr))
 	{
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"not SUCCEEDED hr=0x%08x",hr);
-	}
-	else
-	{
-		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"OK");
 	}
     return hr;
 }
@@ -728,16 +972,46 @@ HRESULT CEIDCredential::ReportResult(
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     )
 {
-    if (ppwszOptionalStatusText) *ppwszOptionalStatusText = L"Unknow Error";
-    if (pcpsiOptionalStatusIcon) *pcpsiOptionalStatusIcon = CPSI_NONE;
-
 	AuditLogonResult(_pContainer, _cpus, _fAutoLogonPinUsed, ntsStatus);
+	if (ntsStatus == STATUS_SUCCESS && _szPendingPassword)
+	{
+		CompletePending();
+	}
+	else if (ntsStatus != STATUS_SUCCESS && _fPasswordFromCard
+		&& (ntsStatus == STATUS_WRONG_PASSWORD || (ntsStatus == STATUS_LOGON_FAILURE && ntsSubstatus == STATUS_WRONG_PASSWORD)))
+	{
+		// the password was changed elsewhere (for example by JumpCloud) : ask for it once,
+		// and stop retrying the stored one, which would count towards the account lockout
+		EIDSetPasswordStale(_dwRid, TRUE);
+		SetMode(EidTileStalePassword);
+	}
+	ClearPending();
 	_fAutoLogonPinUsed = FALSE;
+	_fPasswordFromCard = FALSE;
 	
 	if (ntsStatus == STATUS_SUCCESS)
 	{
 		_pContainer->TriggerRemovePolicy();
 	}
+	FormatStatus(ntsStatus, ntsSubstatus, ppwszOptionalStatusText, pcpsiOptionalStatusIcon);
+    // If we failed the logon, try to erase the Pin field.
+    if (!SUCCEEDED(HRESULT_FROM_NT(ntsStatus)))
+    {
+        if (_pCredProvCredentialEvents)
+        {
+            _pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
+        }
+    }
+
+    // Since NULL is a valid value for *ppwszOptionalStatusText and *pcpsiOptionalStatusIcon
+    // this function can't fail.
+	return S_OK;
+}
+
+VOID CEIDCredential::FormatStatus(__in NTSTATUS ntsStatus, __in NTSTATUS ntsSubstatus, __out_opt PWSTR* ppwszOptionalStatusText, __out_opt CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
+{
+    if (ppwszOptionalStatusText) *ppwszOptionalStatusText = NULL;
+    if (pcpsiOptionalStatusIcon) *pcpsiOptionalStatusIcon = CPSI_NONE;
 
     DWORD dwStatusInfo = (DWORD)-1;
 
@@ -780,23 +1054,10 @@ HRESULT CEIDCredential::ReportResult(
 			Error = (PWSTR) CoTaskMemAlloc(dwLen);
 			if (Error)
 			{
-				FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,NULL,LsaNtStatusToWinError(ntsStatus),0,(PWSTR)Error,dwLen,NULL);
+				FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,NULL,LsaNtStatusToWinError(ntsStatus),0,(PWSTR)Error,dwLen / sizeof(WCHAR),NULL);
 			}
 			*ppwszOptionalStatusText = Error;
 		}
 	}
-    // If we failed the logon, try to erase the Pin field.
-    if (!SUCCEEDED(HRESULT_FROM_NT(ntsStatus)))
-    {
-        if (_pCredProvCredentialEvents)
-        {
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_PIN, L"");
-        }
-    }
-
-    // Since NULL is a valid value for *ppwszOptionalStatusText and *pcpsiOptionalStatusIcon
-    // this function can't fail.
-    
-	return S_OK;
 }
 

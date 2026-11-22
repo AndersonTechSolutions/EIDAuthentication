@@ -295,9 +295,9 @@ void EIDCredentialProviderDllRegister()
 	RegSetKeyValue(	HKEY_LOCAL_MACHINE, 
 		TEXT("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers\\{B4866A0A-DB08-4835-A26F-414B46F3244C}"), 
 		NULL, REG_SZ, TEXT("EidCredentialProvider"),sizeof(TEXT("EidCredentialProvider")));
-	RegSetKeyValue(	HKEY_LOCAL_MACHINE, 
-		TEXT("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Provider Filters\\{B4866A0A-DB08-4835-A26F-414B46F3244C}"), 
-		NULL, REG_SZ, TEXT("EidCredentialProvider"),sizeof(TEXT("EidCredentialProvider")));
+	// v0.3.0 : not a filter anymore (it let every provider through)
+	RegDeleteTree(HKEY_LOCAL_MACHINE, 
+		TEXT("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Provider Filters\\{B4866A0A-DB08-4835-A26F-414B46F3244C}"));
 	RegSetKeyValue(	HKEY_CLASSES_ROOT, 
 		TEXT("CLSID\\{B4866A0A-DB08-4835-A26F-414B46F3244C}"), 
 		NULL, REG_SZ, TEXT("EidCredentialProvider"),sizeof(TEXT("EidCredentialProvider")));

@@ -42,10 +42,12 @@ enum SAMPLE_FIELD_ID
     SFI_TILEIMAGE       = 0,
     SFI_USERNAME        = 1,
 	SFI_MESSAGE         = 2,
-    SFI_PIN		        = 3,
-    SFI_CERTIFICATE		= 4,
-	SFI_SUBMIT_BUTTON   = 5, 
-    SFI_NUM_FIELDS      = 6,  // Note: if new fields are added, keep NUM_FIELDS last.  This is used as a count of the number of fields
+	SFI_ACCOUNT         = 3, // enrollment at the first logon with the card
+	SFI_PASSWORD        = 4, // enrollment, or Windows password changed elsewhere
+    SFI_PIN		        = 5,
+    SFI_CERTIFICATE		= 6,
+	SFI_SUBMIT_BUTTON   = 7, 
+    SFI_NUM_FIELDS      = 8,  // Note: if new fields are added, keep NUM_FIELDS last.  This is used as a count of the number of fields
 };
 
 // Same as SAMPLE_FIELD_ID above, but for the CMessageCredential.
@@ -77,9 +79,11 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_DISPLAY_IN_BOTH, CPFIS_NONE },                   // SFI_TILEIMAGE
     { CPFS_DISPLAY_IN_BOTH, CPFIS_NONE },                   // SFI_USERNAME
 	{ CPFS_DISPLAY_IN_BOTH, CPFIS_NONE },                   // SFI_MESSAGE
+	{ CPFS_HIDDEN, CPFIS_NONE },                            // SFI_ACCOUNT (shown by CEIDCredential::SetMode)
+	{ CPFS_HIDDEN, CPFIS_NONE },                            // SFI_PASSWORD (shown by CEIDCredential::SetMode)
     { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED },       // SFI_PIN
-    { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE    },       // SFI_SUBMIT_BUTTON   
 	{ CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE    },       // SFI_CERTIFICATE
+    { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE    },       // SFI_SUBMIT_BUTTON   
 };
 
 // Same as s_rgFieldStatePairs above, but for the CMessageCredential.
@@ -99,6 +103,8 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
     { SFI_TILEIMAGE, CPFT_TILE_IMAGE ,L""},
     { SFI_USERNAME, CPFT_LARGE_TEXT,L""},
 	{ SFI_MESSAGE, CPFT_SMALL_TEXT,L""},
+	{ SFI_ACCOUNT, CPFT_EDIT_TEXT,L"Windows user name"},
+	{ SFI_PASSWORD, CPFT_PASSWORD_TEXT,L"Windows password"},
     { SFI_PIN, CPFT_PASSWORD_TEXT,L""},
 	{ SFI_CERTIFICATE, CPFT_COMMAND_LINK,L""},
     { SFI_SUBMIT_BUTTON, CPFT_SUBMIT_BUTTON, L""},

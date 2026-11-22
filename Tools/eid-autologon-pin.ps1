@@ -3,15 +3,16 @@
   Manage the saved tap sign-in PINs of EID Authentication on this computer.
 
 .DESCRIPTION
-  -List          the station PIN and each local account : saved / none (never shows a PIN)
+  -List          the station PIN and each local account : PIN saved / none, card enrolled (never shows a PIN)
   -Clear -User   forget the PIN learnt for one account ("*" : every account).
                  The user's next sign-in with card + PIN saves it again; to offboard,
                  unenroll the card as well.
+  -RemoveCard -User  unenroll the card of an account and forget its PIN (offboarding, lost card)
   -SetStation    set the fallback PIN shared by every badge (prompted, never on the command line)
   -ClearStation  remove the fallback PIN
   -Events        the audit trail (Application log, source EIDAuthentication)
 
-  Reading the LSA secrets needs SYSTEM : -List and -Clear run through a one-shot scheduled task.
+  Reading the LSA secrets needs SYSTEM : -List, -Clear and -RemoveCard run through a one-shot scheduled task.
 
 .EXAMPLE
   .\eid-autologon-pin.ps1 -List
@@ -23,7 +24,9 @@
 param(
     [Parameter(ParameterSetName = 'List')][switch]$List,
     [Parameter(ParameterSetName = 'Clear', Mandatory)][switch]$Clear,
-    [Parameter(ParameterSetName = 'Clear', Mandatory)][string]$User,
+    [Parameter(ParameterSetName = 'Clear', Mandatory)]
+    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][string]$User,
+    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][switch]$RemoveCard,
     [Parameter(ParameterSetName = 'SetStation', Mandatory)][switch]$SetStation,
     [Parameter(ParameterSetName = 'ClearStation', Mandatory)][switch]$ClearStation,
     [Parameter(ParameterSetName = 'Events', Mandatory)][switch]$Events,
@@ -57,7 +60,7 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not (Test-Path $out)) { throw 'No output: is this build older than ListAutoLogonPins?' }
         Get-Content $out -Encoding UTF8 | ForEach-Object {
             $f = $_ -split "`t"
-            [pscustomobject]@{ Account = $f[0]; Rid = $f[1]; Pin = $f[2] }
+            [pscustomobject]@{ Account = $f[0]; Rid = $f[1]; Pin = $f[2]; Card = $f[3] }
         } | Format-Table -AutoSize
         Remove-Item $out
     }
@@ -66,6 +69,12 @@ switch ($PSCmdlet.ParameterSetName) {
         if ($User -ne '*' -and -not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { throw "No local account named $User" }
         Invoke-AsSystem 'ClearUserAutoLogonPin' "set `"EID_AUTOLOGON_USER=$User`"&&"
         Write-Host "Cleared the saved PIN of $User (see -Events)."
+    }
+    'RemoveCard' {
+        if ($User -notmatch '^[\w.\- ]{1,20}$') { throw "Invalid account name: $User" }
+        if (-not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { throw "No local account named $User" }
+        Invoke-AsSystem 'RemoveUserCard' "set `"EID_AUTOLOGON_USER=$User`"&&"
+        Write-Host "Removed the card of $User (see -Events). The next sign-in with a card enrolls it again."
     }
     'SetStation' {
         $secure = Read-Host 'Station PIN' -AsSecureString
