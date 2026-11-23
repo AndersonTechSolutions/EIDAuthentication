@@ -29,6 +29,7 @@ How it works: no EID code runs inside lsass, so LSA protection (`RunAsPPL`) stay
 - Optional computer-wide fallback PIN (all badges share it): `-SetStation` / `-ClearStation` in the admin script.
 - Only a card *inserted* while the sign-in or lock screen is shown triggers it. A card left in the reader doesn't unlock a session that was just locked.
 - With a PIN saved, holding the badge is enough to sign in. Treat badges like keys.
+- Revoking a card: put its certificate in the computer's `Disallowed` store (`LocalMachine\Disallowed`). From the next insertion it gets no tile and no tap sign-in. Online revocation (CRL/OCSP) is not checked, so a certificate without a CRL distribution point works.
 - UAC prompts get no card tile.
 - Uninstalling removes every saved PIN.
 
