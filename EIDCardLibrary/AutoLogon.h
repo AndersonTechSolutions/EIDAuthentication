@@ -40,6 +40,10 @@ BOOL EIDHasAutoLogonPin(__in DWORD dwRid);
 VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin);
 // removes the PIN learnt for a user. TRUE when one was stored.
 BOOL EIDForgetUserAutoLogonPin(__in DWORD dwRid);
+// the stored password of a user was refused by Windows (changed elsewhere, e.g. by JumpCloud) :
+// the tile asks for the new one instead of retrying it at each insertion
+BOOL EIDIsPasswordStale(__in DWORD dwRid);
+VOID EIDSetPasswordStale(__in DWORD dwRid, __in BOOL fStale);
 // a PIN is stored for this user (dwRid != 0) or for the computer (dwRid == 0), no fallback.
 // FALSE with ERROR_FILE_NOT_FOUND when there is none.
 BOOL EIDIsAutoLogonPinStored(__in DWORD dwRid);
@@ -53,6 +57,8 @@ BOOL EIDIsAutoLogonPinStored(__in DWORD dwRid);
 #define EID_EVENT_LOGON_PIN_FAILED	1003
 #define EID_EVENT_PIN_LEARNT		1010
 #define EID_EVENT_PIN_FORGOTTEN		1011
+#define EID_EVENT_CARD_ENROLLED		1012
+#define EID_EVENT_PASSWORD_UPDATED	1013
 #define EID_EVENT_PIN_ADMIN			1020
 VOID EIDAuditEvent(__in WORD wType, __in DWORD dwEventId, __in PCWSTR szFormat, ...);
 BOOL EIDRegisterEventSource();

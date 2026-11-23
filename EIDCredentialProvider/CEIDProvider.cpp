@@ -186,7 +186,6 @@ HRESULT CEIDProvider::SetUsageScenario(
     {
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:       
-    case CPUS_CREDUI:
         _cpus = cpus;
 		_dwFlags = dwFlags;
 		if (_dwFlags & CREDUIWIN_AUTHPACKAGE_ONLY || _dwFlags & CREDUIWIN_IN_CRED_ONLY)
@@ -200,6 +199,8 @@ HRESULT CEIDProvider::SetUsageScenario(
 		}
         
         break;
+    case CPUS_CREDUI:
+		// v0.3.0 : the password logon of MSV1_0 is serialized for logon and unlock only
     case CPUS_CHANGE_PASSWORD:
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"E_NOTIMPL");
         hr = E_NOTIMPL;

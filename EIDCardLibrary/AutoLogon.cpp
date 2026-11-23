@@ -244,6 +244,41 @@ BOOL EIDIsAutoLogonPinStored(__in DWORD dwRid)
 	return TRUE;
 }
 
+#define EID_STALE_KEY L"SOFTWARE\\EIDAuthentication\\StalePassword"
+
+BOOL EIDIsPasswordStale(__in DWORD dwRid)
+{
+	WCHAR szRid[9];
+	DWORD dwValue = 0, dwSize = sizeof(dwValue);
+	swprintf_s(szRid, ARRAYSIZE(szRid), L"%08X", dwRid);
+	if (ERROR_SUCCESS != RegGetValueW(HKEY_LOCAL_MACHINE, EID_STALE_KEY, szRid, RRF_RT_REG_DWORD, NULL, &dwValue, &dwSize))
+	{
+		return FALSE;
+	}
+	return dwValue != 0;
+}
+
+VOID EIDSetPasswordStale(__in DWORD dwRid, __in BOOL fStale)
+{
+	WCHAR szRid[9];
+	LONG lStatus;
+	swprintf_s(szRid, ARRAYSIZE(szRid), L"%08X", dwRid);
+	if (fStale)
+	{
+		DWORD dwValue = 1;
+		lStatus = RegSetKeyValueW(HKEY_LOCAL_MACHINE, EID_STALE_KEY, szRid, REG_DWORD, &dwValue, sizeof(dwValue));
+	}
+	else
+	{
+		lStatus = RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, EID_STALE_KEY, szRid);
+		if (ERROR_FILE_NOT_FOUND == lStatus) lStatus = ERROR_SUCCESS;
+	}
+	if (ERROR_SUCCESS != lStatus)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Unable to set the stale flag of rid 0x%x : 0x%08x", dwRid, lStatus);
+	}
+}
+
 BOOL EIDForgetUserAutoLogonPin(__in DWORD dwRid)
 {
 	if (!dwRid || !EIDIsAutoLogonPinStored(dwRid))

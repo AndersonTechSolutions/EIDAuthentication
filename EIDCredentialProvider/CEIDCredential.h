@@ -154,4 +154,24 @@ class CEIDCredential : public ICredentialProviderCredential
 	CContainer* _pContainer;
 	BOOL _fAutoLogonPinUsed; // the last serialization used the stored PIN (tap sign-in)
 
+	// v0.3.0 : the logon is a password logon done by MSV1_0. The password comes from the
+	// stored credential, or is typed once : at the first logon with the card (enrollment)
+	// or after a change made elsewhere. A typed password is stored only when the logon succeeded.
+	enum EID_TILE_MODE
+	{
+		EidTileLogon,
+		EidTileEnroll,
+		EidTileStalePassword,
+	};
+	EID_TILE_MODE _eMode;
+	DWORD _dwRid; // 0 : card not enrolled
+	BOOL _fPasswordFromCard; // the last serialization used the stored password
+	PWSTR _szPendingAccount;
+	PWSTR _szPendingPassword;
+	PWSTR _szPendingPin;
+	VOID SetMode(__in EID_TILE_MODE eMode);
+	VOID CompletePending();
+	VOID ClearPending();
+	VOID FormatStatus(__in NTSTATUS ntsStatus, __in NTSTATUS ntsSubstatus, __out_opt PWSTR* ppwszOptionalStatusText, __out_opt CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon);
+
 };

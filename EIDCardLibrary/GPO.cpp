@@ -53,7 +53,8 @@ GPOInfo MyGPOInfo[] =
   {szMainGPOKey, _T("ForceReadingAllCertificates") },
   {szForceGPOKey, _T("scforceoption") },
   {szRemoveGPOKey, _T("scremoveoption") },
-  {szEIDGPOKey, _T("AutoLogonOnCardInsert") }
+  {szEIDGPOKey, _T("AutoLogonOnCardInsert") },
+  {szEIDGPOKey, _T("DisableEnrollAtLogon") }
 };
 
 DWORD GetPolicyValue( GPOPolicy Policy)

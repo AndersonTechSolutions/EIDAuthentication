@@ -1772,11 +1772,8 @@ BOOL CStoredCredentialManager::VerifySignatureChallengeResponse(__in DWORD dwRid
 
 BOOL CStoredCredentialManager::StorePrivateData(__in DWORD dwRid, __in_opt PBYTE pbSecret, __in_opt USHORT usSecretSize)
 {
-
-	if (!EIDIsComponentInLSAContext())
- 	{
-		return StorePrivateDataDebug(dwRid,pbSecret, usSecretSize);
-	}
+	// v0.3.0 : always the LSA secret, also outside lsass (LogonUI and the admin commands run as SYSTEM).
+	// The former fallback outside lsass wrote the credential to a file in %TEMP%.
 
 	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
     LSA_HANDLE LsaPolicyHandle = NULL;
@@ -1903,10 +1900,7 @@ BOOL CStoredCredentialManager::StorePrivateDataDebug(__in DWORD dwRid, __in_opt 
 
 BOOL CStoredCredentialManager::RetrievePrivateData(__in DWORD dwRid, __out PEID_PRIVATE_DATA *ppPrivateData)
 {
-	if (!EIDIsComponentInLSAContext())
- 	{
-		return RetrievePrivateDataDebug(dwRid,ppPrivateData);
-	}
+	// v0.3.0 : always the LSA secret (see StorePrivateData)
 
 	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
     LSA_HANDLE LsaPolicyHandle = NULL;

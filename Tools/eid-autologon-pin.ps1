@@ -3,15 +3,16 @@
   Manage the saved tap sign-in PINs of EID Authentication on this computer.
 
 .DESCRIPTION
-  -List          the station PIN and each local account : saved / none (never shows a PIN)
+  -List          the station PIN and each local account : PIN saved / none, card enrolled (never shows a PIN)
   -Clear -User   forget the PIN learnt for one account ("*" : every account).
                  The user's next sign-in with card + PIN saves it again; to offboard,
                  unenroll the card as well.
+  -RemoveCard -User  unenroll the card of an account and forget its PIN (offboarding, lost card)
   -SetStation    set the fallback PIN shared by every badge (prompted, never on the command line)
   -ClearStation  remove the fallback PIN
   -Events        the audit trail (Application log, source EIDAuthentication)
 
-  Reading the LSA secrets needs SYSTEM : -List and -Clear run through a one-shot scheduled task.
+  Reading the LSA secrets needs SYSTEM : -List, -Clear and -RemoveCard run through a one-shot scheduled task.
 
 .EXAMPLE
   .\eid-autologon-pin.ps1 -List
@@ -23,7 +24,9 @@
 param(
     [Parameter(ParameterSetName = 'List')][switch]$List,
     [Parameter(ParameterSetName = 'Clear', Mandatory)][switch]$Clear,
-    [Parameter(ParameterSetName = 'Clear', Mandatory)][string]$User,
+    [Parameter(ParameterSetName = 'Clear', Mandatory)]
+    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][string]$User,
+    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][switch]$RemoveCard,
     [Parameter(ParameterSetName = 'SetStation', Mandatory)][switch]$SetStation,
     [Parameter(ParameterSetName = 'ClearStation', Mandatory)][switch]$ClearStation,
     [Parameter(ParameterSetName = 'Events', Mandatory)][switch]$Events,
@@ -31,7 +34,26 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Dll = "$env:WINDIR\System32\EIDAuthenticationPackage.dll"
-$WorkDir = "$env:ProgramData\EIDAuth"
+
+# A fresh folder that only SYSTEM and Administrators can write, created with its ACL : SYSTEM
+# writes the -List output there, so no user may pre-create it or plant a link in it.
+function New-PrivateWorkDir {
+    $path = Join-Path "$env:SystemRoot\Temp" ('EIDAuth-' + [guid]::NewGuid().ToString('N'))
+    if (Test-Path -LiteralPath $path) { throw "$path already exists." }
+    $sec = New-Object System.Security.AccessControl.DirectorySecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') {
+        $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    $sec.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    $dir = [System.IO.Directory]::CreateDirectory($path, $sec)
+    $owner = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $owner -notin 'S-1-5-18', 'S-1-5-32-544') {
+        throw "$path is not a private folder (owner $owner)."
+    }
+    $path
+}
 
 function Invoke-AsSystem([string]$Command, [string]$Variables) {
     $task = 'EIDAuth-pin-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -47,25 +69,33 @@ function Invoke-AsSystem([string]$Command, [string]$Variables) {
 }
 
 if (-not (Test-Path $Dll)) { throw "EID Authentication is not installed ($Dll missing)." }
-New-Item -ItemType Directory -Force $WorkDir | Out-Null
 
 switch ($PSCmdlet.ParameterSetName) {
     'List' {
-        $out = Join-Path $WorkDir 'pins.txt'
-        Remove-Item $out -ErrorAction SilentlyContinue
-        Invoke-AsSystem 'ListAutoLogonPins' "set EID_AUTOLOGON_OUT=$out&&"
-        if (-not (Test-Path $out)) { throw 'No output: is this build older than ListAutoLogonPins?' }
-        Get-Content $out -Encoding UTF8 | ForEach-Object {
-            $f = $_ -split "`t"
-            [pscustomobject]@{ Account = $f[0]; Rid = $f[1]; Pin = $f[2] }
-        } | Format-Table -AutoSize
-        Remove-Item $out
+        $workDir = New-PrivateWorkDir
+        try {
+            $out = Join-Path $workDir 'pins.txt'
+            Invoke-AsSystem 'ListAutoLogonPins' "set `"EID_AUTOLOGON_OUT=$out`"&&"
+            if (-not (Test-Path -LiteralPath $out)) { throw 'No output: is this build older than ListAutoLogonPins?' }
+            Get-Content -LiteralPath $out -Encoding UTF8 | ForEach-Object {
+                $f = $_ -split "`t"
+                [pscustomobject]@{ Account = $f[0]; Rid = $f[1]; Pin = $f[2]; Card = $f[3] }
+            } | Format-Table -AutoSize
+        } finally {
+            Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     'Clear' {
         if ($User -ne '*' -and $User -notmatch '^[\w.\- ]{1,20}$') { throw "Invalid account name: $User" }
         if ($User -ne '*' -and -not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { throw "No local account named $User" }
         Invoke-AsSystem 'ClearUserAutoLogonPin' "set `"EID_AUTOLOGON_USER=$User`"&&"
         Write-Host "Cleared the saved PIN of $User (see -Events)."
+    }
+    'RemoveCard' {
+        if ($User -notmatch '^[\w.\- ]{1,20}$') { throw "Invalid account name: $User" }
+        if (-not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { throw "No local account named $User" }
+        Invoke-AsSystem 'RemoveUserCard' "set `"EID_AUTOLOGON_USER=$User`"&&"
+        Write-Host "Removed the card of $User (see -Events). The next sign-in with a card enrolls it again."
     }
     'SetStation' {
         $secure = Read-Host 'Station PIN' -AsSecureString
