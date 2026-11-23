@@ -806,9 +806,9 @@ HRESULT CEIDCredential::GetSerialization(
                     switch(dwError)
                     {
                         case SCARD_W_WRONG_CHV:
-                            // the PIN learnt for auto logon may be outdated : forget it so that
-                            // the next insertions don't consume the remaining attempts
-                            if (EIDForgetUserAutoLogonPin(_dwRid))
+                            // the saved PIN may be outdated : forget it so that the next insertions
+                            // don't consume the remaining attempts. A mistyped PIN keeps the saved one.
+                            if (_fAutoLogonPinUsed && EIDForgetUserAutoLogonPin(_dwRid))
                             {
                                 EIDAuditEvent(EVENTLOG_WARNING_TYPE, EID_EVENT_PIN_FORGOTTEN,
                                     L"Forgot the tap sign-in PIN of account RID 0x%X: the card refused it. The next sign-in with the PIN saves it again.", _dwRid);
