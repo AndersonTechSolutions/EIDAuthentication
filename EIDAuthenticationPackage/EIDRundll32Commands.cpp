@@ -68,7 +68,8 @@ static HANDLE OpenOutput()
 		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EID_AUTOLOGON_OUT missing or too long");
 		return INVALID_HANDLE_VALUE;
 	}
-	return CreateFileW(szPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	// CREATE_NEW : never write through a file or link planted at that path (we run as SYSTEM)
+	return CreateFileW(szPath, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
 static VOID WriteOutputLine(__in HANDLE hOut, __in PCWSTR szFormat, ...)
