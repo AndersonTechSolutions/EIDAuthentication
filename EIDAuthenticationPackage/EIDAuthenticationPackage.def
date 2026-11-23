@@ -7,6 +7,8 @@ DllEnableLogging
 DllDisableLogging
 SetAutoLogonPin
 ClearAutoLogonPin
+ListAutoLogonPins
+ClearUserAutoLogonPin
 LsaApCallPackage
 LsaApCallPackagePassthrough
 LsaApCallPackageUntrusted

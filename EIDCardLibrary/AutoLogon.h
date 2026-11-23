@@ -19,14 +19,41 @@
 
 /** Auto logon on card insertion (AndersonTech kiosk mode)
 
-The PIN of the badges is stored once per computer in a LSA secret, readable only
-by SYSTEM and the administrators. When the AutoLogonOnCardInsert policy is set,
-the credential provider uses it to log on as soon as an enrolled card is inserted :
-the possession of the card is then enough to log on.
+When the AutoLogonOnCardInsert policy is set, the credential provider logs on as soon as
+an enrolled card is inserted, with a PIN stored in a LSA secret (readable only by SYSTEM
+and the administrators) :
+- the PIN of the user, learnt by the authentication package at the first successful PIN
+  logon of this user on this computer (one PIN per employee, same on every station)
+- else the PIN of the computer, set by SetAutoLogonPin (all the badges share it)
+The possession of the card is then enough to log on.
 */
 
-// set the PIN used for auto logon. NULL removes it.
+// set the PIN of the computer. NULL removes it.
 BOOL EIDSetAutoLogonPin(__in_opt PCWSTR szPin);
-// retrieve the PIN. The caller must SecureZeroMemory and EIDFree it.
-BOOL EIDGetAutoLogonPin(__out PWSTR* pszPin);
-BOOL EIDHasAutoLogonPin();
+// set the PIN learnt for a user. NULL removes it.
+BOOL EIDSetUserAutoLogonPin(__in DWORD dwRid, __in_opt PCWSTR szPin);
+// PIN of the user (dwRid != 0), else PIN of the computer.
+// The caller must SecureZeroMemory and EIDFree it.
+BOOL EIDGetAutoLogonPin(__in DWORD dwRid, __out PWSTR* pszPin);
+BOOL EIDHasAutoLogonPin(__in DWORD dwRid);
+// called by the authentication package after a successful PIN logon
+VOID EIDLearnUserAutoLogonPin(__in DWORD dwRid, __in PCWSTR szPin);
+// removes the PIN learnt for a user. TRUE when one was stored.
+BOOL EIDForgetUserAutoLogonPin(__in DWORD dwRid);
+// a PIN is stored for this user (dwRid != 0) or for the computer (dwRid == 0), no fallback.
+// FALSE with ERROR_FILE_NOT_FOUND when there is none.
+BOOL EIDIsAutoLogonPinStored(__in DWORD dwRid);
+
+/** Audit trail : events of the Application log, source "EIDAuthentication"
+(the message file of .NET displays the text of each event as is) */
+#define EID_EVENT_SOURCE L"EIDAuthentication"
+#define EID_EVENT_LOGON_TAP_OK		1000
+#define EID_EVENT_LOGON_TAP_FAILED	1001
+#define EID_EVENT_LOGON_PIN_OK		1002
+#define EID_EVENT_LOGON_PIN_FAILED	1003
+#define EID_EVENT_PIN_LEARNT		1010
+#define EID_EVENT_PIN_FORGOTTEN		1011
+#define EID_EVENT_PIN_ADMIN			1020
+VOID EIDAuditEvent(__in WORD wType, __in DWORD dwEventId, __in PCWSTR szFormat, ...);
+BOOL EIDRegisterEventSource();
+BOOL EIDUnRegisterEventSource();

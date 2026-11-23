@@ -131,6 +131,7 @@ class CEIDCredential : public ICredentialProviderCredential
 	void SetUsageScenario(__in CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,__in DWORD dwFlags);
     virtual ~CEIDCredential();
 	CContainer* GetContainer();
+	BOOL HasAutoLogonPin();
   private:
     LONG                                  _cRef;
 
@@ -151,5 +152,6 @@ class CEIDCredential : public ICredentialProviderCredential
                                                                                         // _rgCredProvFieldDescriptors.
     ICredentialProviderCredentialEvents* _pCredProvCredentialEvents;           
 	CContainer* _pContainer;
+	BOOL _fAutoLogonPinUsed; // the last serialization used the stored PIN (tap sign-in)
 
 };

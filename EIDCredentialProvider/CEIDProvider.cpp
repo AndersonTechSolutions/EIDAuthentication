@@ -426,7 +426,8 @@ HRESULT CEIDProvider::GetCredentialCount(
 				if ((_cpus == CPUS_LOGON || _cpus == CPUS_UNLOCK_WORKSTATION)
 					&& InterlockedExchange(&_lAutoLogonArmed, 0) == 1)
 				{
-					fAutoLogon = EIDHasAutoLogonPin();
+					CEIDCredential* pCredential = _CredentialList.GetContainerHolderAt(0);
+					fAutoLogon = pCredential && pCredential->HasAutoLogonPin();
 					EIDCardLibraryTrace(WINEVENT_LEVEL_INFO,L"Auto logon %s", fAutoLogon ? L"submitted" : L"skipped: no PIN stored");
 				}
 			}
