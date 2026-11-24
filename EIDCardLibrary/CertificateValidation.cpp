@@ -262,6 +262,30 @@ BOOL IsCertificateInComputerTrustedPeopleStore(__in PCCERT_CONTEXT pCertContext)
 	return fReturn;
 }
 
+// revocation : a certificate the administrator put in the computer's Disallowed store is
+// refused before any other test (the TrustedPeople shortcut below skips the chain engine)
+BOOL IsCertificateInComputerDisallowedStore(__in PCCERT_CONTEXT pCertContext)
+{
+	BOOL fReturn = FALSE;
+	HCERTSTORE hDisallowed = CertOpenStore(CERT_STORE_PROV_SYSTEM,0,NULL,CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_READONLY_FLAG,_T("Disallowed"));
+	if (hDisallowed)
+	{
+		PCCERT_CONTEXT pCertificateFound = CertFindCertificateInStore(hDisallowed, pCertContext->dwCertEncodingType, 0, CERT_FIND_EXISTING, pCertContext, NULL);
+		if (pCertificateFound)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Certificate found in disallowed store");
+			fReturn = TRUE;
+			CertFreeCertificateContext(pCertificateFound);
+		}
+		CertCloseStore(hDisallowed, 0);
+	}
+	else
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_VERBOSE,L"unable to open disallowed store 0x%08x", GetLastError());
+	}
+	return fReturn;
+}
+
 BOOL IsTrustedCertificate(__in PCCERT_CONTEXT pCertContext, __in_opt DWORD dwFlag)
 {
     //
@@ -318,6 +342,11 @@ BOOL IsTrustedCertificate(__in PCCERT_CONTEXT pCertContext, __in_opt DWORD dwFla
 				__leave;
 			}
 		}
+		if (IsCertificateInComputerDisallowedStore(pCertContext))
+		{
+			dwError = (DWORD) CERT_E_REVOKED;
+			__leave;
+		}
 		// XP doesn't support CERT_CHAIN_ENABLE_PEER_TRUST
 		if (IsCertificateInComputerTrustedPeopleStore(pCertContext))
 		{
@@ -329,6 +358,7 @@ BOOL IsTrustedCertificate(__in PCCERT_CONTEXT pCertContext, __in_opt DWORD dwFla
 			{
 				dwError = GetLastError();
 				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Error 0x%08x returned by CertGetCertificateChain", GetLastError());
+				__leave;
 			}
 
 			if (pChainContext->TrustStatus.dwErrorStatus)
