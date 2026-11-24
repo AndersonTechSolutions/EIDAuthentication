@@ -14,8 +14,11 @@
   -NewTransferKey  on the target computer : make its card transfer key and print the public part (EIDTKEY1:...)
   -ExportCard -User -ToKey <EIDTKEY1:...> [-Path]  seal the copy for that computer only (prints it without -Path).
                  A sealed copy can travel anywhere (chat, ticket, e-mail) : only the target computer opens it.
-  -ImportCard -Sealed <EIDSEALED1...> | -Path <file>  a sealed copy is opened with this computer's transfer key
-  -RemoveTransferKey  delete this computer's transfer key
+  -ImportCard -Sealed <EIDSEALED1...> | -Path <file>  a sealed copy is opened with this computer's transfer key.
+                 The key is one-shot : deleted after the import, also when the import is refused (-KeepKey keeps it),
+                 and refused once older than -MaxKeyAgeMinutes (30). Prints "IMPORTED account=<name> cert=<SHA-1>".
+  -RemoveTransferKey  delete this computer's transfer key (succeeds when there is none)
+  Every refusal exits with code 1 and one line on stderr : "EIDAUTH-ERROR: <reason>".
   -SetStation    set the fallback PIN shared by every badge (prompted, never on the command line)
   -ClearStation  remove the fallback PIN
   -Events        the audit trail (Application log, source EIDAuthentication)
@@ -48,6 +51,8 @@ param(
     [Parameter(ParameterSetName = 'ExportCard')][string]$ToKey,
     [Parameter(ParameterSetName = 'ImportCard', Mandatory)][switch]$ImportCard,
     [Parameter(ParameterSetName = 'ImportCard')][string]$Sealed,
+    [Parameter(ParameterSetName = 'ImportCard')][switch]$KeepKey,
+    [Parameter(ParameterSetName = 'ImportCard')][ValidateRange(1, 1440)][int]$MaxKeyAgeMinutes = 30,
     [Parameter(ParameterSetName = 'ExportCard')]
     [Parameter(ParameterSetName = 'ImportCard')][string]$Path,
     [Parameter(ParameterSetName = 'NewTransferKey', Mandatory)][switch]$NewTransferKey,
@@ -58,6 +63,11 @@ param(
     [Parameter(ParameterSetName = 'Events')][int]$Last = 20
 )
 $ErrorActionPreference = 'Stop'
+# one line and exit code 1 on any failure, so a runbook can stop cleanly
+trap {
+    [Console]::Error.WriteLine('EIDAUTH-ERROR: ' + ($_.Exception.Message -replace '\s+', ' ').Trim())
+    exit 1
+}
 $Dll = "$env:WINDIR\System32\EIDAuthenticationPackage.dll"
 
 # A fresh folder that only SYSTEM and Administrators can write, created with its ACL : SYSTEM
@@ -95,6 +105,7 @@ function Protect-AdminOnlyFile([string]$File) {
 # Sealed copies : RSA-3072 OAEP-SHA256 wraps an AES-256-CBC key and an HMAC-SHA256 key (encrypt-then-MAC).
 # The private key is a non-exportable machine key of the target computer (SYSTEM and Administrators).
 $TransferKeyName = 'EIDAuthCardTransfer'
+$TransferKeyReg = 'HKLM:\SOFTWARE\EIDAuthentication\TransferKey'
 $Ksp = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
 
 function Get-KeyFingerprint([byte[]]$PublicBlob) {
@@ -110,7 +121,24 @@ function New-TransferKey {
     $p.KeyUsage = [System.Security.Cryptography.CngKeyUsages]::Decryption
     $p.Parameters.Add((New-Object System.Security.Cryptography.CngProperty('Length', [BitConverter]::GetBytes([int]3072), [System.Security.Cryptography.CngPropertyOptions]::None)))
     $key = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::Rsa, $TransferKeyName, $p)
-    try { $key.Export([System.Security.Cryptography.CngKeyBlobFormat]::GenericPublicBlob) } finally { $key.Dispose() }
+    try { $blob = $key.Export([System.Security.Cryptography.CngKeyBlobFormat]::GenericPublicBlob) } finally { $key.Dispose() }
+    # the key's birth time and fingerprint, for the lifetime check (admin-only HKLM key)
+    New-Item -Path $TransferKeyReg -Force | Out-Null
+    Set-ItemProperty -Path $TransferKeyReg -Name CreatedUtc -Value ([DateTime]::UtcNow.ToString('o'))
+    Set-ItemProperty -Path $TransferKeyReg -Name Fingerprint -Value (Get-KeyFingerprint $blob)
+    $blob
+}
+
+# deletes the transfer key and its record; nothing to delete is not an error
+function Remove-TransferKey {
+    $removed = $false
+    if ([System.Security.Cryptography.CngKey]::Exists($TransferKeyName, $Ksp, [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey)) {
+        $key = [System.Security.Cryptography.CngKey]::Open($TransferKeyName, $Ksp, [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey)
+        $key.Delete()
+        $removed = $true
+    }
+    Remove-Item -Path $TransferKeyReg -Force -ErrorAction SilentlyContinue
+    $removed
 }
 
 function Open-TransferKey {
@@ -149,7 +177,13 @@ function Unprotect-CardCopy([string]$Text) {
     $aes = [System.Security.Cryptography.Aes]::Create()
     try {
         $fp = Get-KeyFingerprint ($key.Export([System.Security.Cryptography.CngKeyBlobFormat]::GenericPublicBlob))
-        if ($f.key -ne $fp) { throw "This copy is sealed for another computer (key $($f.key), this computer $fp)." }
+        if ($f.key -ne $fp) { throw "This copy is sealed for another computer or an older key (key $($f.key), this computer $fp)." }
+        $record = Get-ItemProperty -Path $TransferKeyReg -ErrorAction SilentlyContinue
+        if (-not $record -or $record.Fingerprint -ne $fp) { throw 'The transfer key has no birth record: make a new one with -NewTransferKey.' }
+        $age = [DateTime]::UtcNow - [DateTime]::Parse($record.CreatedUtc, $null, [Globalization.DateTimeStyles]::RoundtripKind)
+        if ($age.TotalMinutes -gt $MaxKeyAgeMinutes -or $age.TotalMinutes -lt -5) {
+            throw "The transfer key is $([int]$age.TotalMinutes) minutes old (limit $MaxKeyAgeMinutes): make a new one with -NewTransferKey."
+        }
         $keys = $rsa.Decrypt([Convert]::FromBase64String($f.wrap), [System.Security.Cryptography.RSAEncryptionPadding]::OaepSHA256)
         $iv = [Convert]::FromBase64String($f.iv); $data = [Convert]::FromBase64String($f.data)
         $expected = (New-Object System.Security.Cryptography.HMACSHA256(,[byte[]]$keys[32..63])).ComputeHash([byte[]]($iv + $data))
@@ -159,6 +193,16 @@ function Unprotect-CardCopy([string]$Text) {
         $aes.CreateDecryptor().TransformFinalBlock($data, 0, $data.Length)
         [Array]::Clear($keys, 0, $keys.Length)
     } finally { $aes.Dispose(); $rsa.Dispose(); $key.Dispose() }
+}
+
+# SHA-1 of the card certificate in a plain copy (EID_PRIVATE_DATA.Hash, bytes 16-35 of the credential)
+function Get-CopyCertThumbprint([byte[]]$Copy) {
+    $text = [Text.Encoding]::ASCII.GetString($Copy)
+    $line = ($text -split "`r?`n") | Where-Object { $_ -like 'credential=*' } | Select-Object -First 1
+    if (-not $line) { throw 'The copy has no credential.' }
+    $data = [Convert]::FromBase64String($line.Substring(11))
+    if ($data.Length -lt 36) { throw 'The copy credential is too short.' }
+    (($data[16..35] | ForEach-Object { $_.ToString('X2') }) -join '')
 }
 
 function Assert-LocalAccount([string]$Name) {
@@ -244,16 +288,21 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not $Sealed -and -not $Path) { throw 'Give -Sealed <EIDSEALED1...> or -Path <file>.' }
         if ($Path -and -not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "No file $Path" }
         $workDir = New-PrivateWorkDir
+        $usedKey = $false
         try {
             $in = Join-Path $workDir 'card.eidcard'
             $out = Join-Path $workDir 'result.txt'
             if (-not $Sealed -and (Get-Content -LiteralPath $Path -TotalCount 1) -like 'EIDSEALED1*') { $Sealed = [IO.File]::ReadAllText($Path) }
             if ($Sealed) {
+                $usedKey = $true
                 $plain = Unprotect-CardCopy $Sealed
-                try { [IO.File]::WriteAllBytes($in, $plain) } finally { [Array]::Clear($plain, 0, $plain.Length) }
             } else {
-                Copy-Item -LiteralPath $Path -Destination $in
+                $plain = [IO.File]::ReadAllBytes($Path)
             }
+            try {
+                $thumbprint = Get-CopyCertThumbprint $plain
+                [IO.File]::WriteAllBytes($in, $plain)
+            } finally { [Array]::Clear($plain, 0, $plain.Length) }
             $userVar = if ($User) { "set `"EID_AUTOLOGON_USER=$User`"&&" } else { '' }
             Invoke-AsSystem 'ImportUserCard' "$userVar set `"EID_AUTOLOGON_IN=$in`"&&set `"EID_AUTOLOGON_OUT=$out`"&&"
             if (-not (Test-Path -LiteralPath $out)) { throw 'No result: is this build older than ImportUserCard?' }
@@ -263,9 +312,13 @@ switch ($PSCmdlet.ParameterSetName) {
                 $text = (New-Object System.ComponentModel.Win32Exception($code)).Message
                 throw "Import refused: $result ($text). Check that the badge CA is trusted here and the card isn't enrolled for another account."
             }
-            Write-Host "Imported the card for $($result.Substring(3)). Inserting it at the lock screen now signs in without typing (see -Events)."
+            $account = $result.Substring(3).Trim()
+            Write-Host "Imported the card for $account. Inserting it at the lock screen now signs in without typing (see -Events)."
+            Write-Output "IMPORTED account=$account cert=$thumbprint"
         } finally {
             Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+            # one-shot key : a forgotten -RemoveTransferKey or a captured copy can't be used later
+            if ($usedKey -and -not $KeepKey) { Remove-TransferKey | Out-Null }
         }
     }
     'NewTransferKey' {
@@ -274,9 +327,8 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Output ('EIDTKEY1:' + [Convert]::ToBase64String($blob))
     }
     'RemoveTransferKey' {
-        $key = Open-TransferKey
-        $key.Delete()
-        Write-Host "Deleted the card transfer key of $env:COMPUTERNAME."
+        if (Remove-TransferKey) { Write-Host "Deleted the card transfer key of $env:COMPUTERNAME." }
+        else { Write-Host "$env:COMPUTERNAME has no card transfer key." }
     }
     'SetStation' {
         $secure = Read-Host 'Station PIN' -AsSecureString
