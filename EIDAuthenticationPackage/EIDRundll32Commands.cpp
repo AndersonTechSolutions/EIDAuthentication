@@ -22,6 +22,7 @@
 
 #pragma comment(lib,"Msi.lib")
 #pragma comment(lib,"Netapi32")
+#pragma comment(lib,"Crypt32")
 
 #include "../EIDCardLibrary/Registration.h"
 #include "../EIDCardLibrary/Tracing.h"
@@ -30,6 +31,8 @@
 BOOL LsaEIDRemoveAllStoredCredential();
 BOOL LsaEIDRemoveStoredCredential(__in_opt PWSTR szUsername);
 BOOL LsaEIDHasStoredCredential(__in_opt PWSTR szUsername);
+BOOL LsaEIDExportStoredCredential(__in PWSTR szUsername, __out PBYTE* ppbData, __out PDWORD pcbData);
+BOOL LsaEIDImportStoredCredential(__in PWSTR szUsername, __in_bcount(cbData) PBYTE pbData, __in DWORD cbData);
 DWORD GetRidFromUsername(LPTSTR szUsername);
 
 typedef VOID (*PFN_LOCAL_ACCOUNT)(__in PCWSTR szName, __in DWORD dwRid, __in_opt PVOID pContext);
@@ -111,6 +114,115 @@ static VOID WritePinState(__in HANDLE hOut, __in PCWSTR szName, __in DWORD dwRid
 		szCard = EIDIsPasswordStale(dwRid) ? L"card (password changed)" : L"card";
 	}
 	WriteOutputLine(hOut, L"%s\t0x%X\t%s\t%s", szName, dwRid, szPin, szCard);
+}
+
+// card copy file (ExportUserCard / ImportUserCard), ASCII lines :
+//   EIDCARD1
+//   account=<account name, UTF-8>
+//   credential=<base64 of the stored credential : certificate + key wrapped for the card + encrypted password>
+//   pin=<saved tap sign-in PIN, UTF-8>   (only when exported with the PIN)
+// The pin line is a secret : the file must travel admin to admin and be deleted after the import.
+#define CARD_FILE_HEADER "EIDCARD1"
+#define CARD_FILE_MAXSIZE 65536
+#define CARD_PIN_MAXLEN 64   // AUTOLOGON_PIN_MAXLEN in AutoLogon.cpp
+
+static BOOL WriteUtf8(__in HANDLE hFile, __in PCSTR szKey, __in PCWSTR szValue)
+{
+	CHAR szBuffer[1024];
+	int iLen = sprintf_s(szBuffer, ARRAYSIZE(szBuffer), "%s=", szKey);
+	int iValue = WideCharToMultiByte(CP_UTF8, 0, szValue, -1, szBuffer + iLen, ARRAYSIZE(szBuffer) - iLen - 2, NULL, NULL);
+	if (iLen < 0 || iValue <= 0)
+	{
+		SecureZeroMemory(szBuffer, sizeof(szBuffer));
+		return FALSE;
+	}
+	iLen += iValue - 1;
+	szBuffer[iLen++] = '\r';
+	szBuffer[iLen++] = '\n';
+	DWORD dwWritten;
+	BOOL fReturn = WriteFile(hFile, szBuffer, iLen, &dwWritten, NULL);
+	SecureZeroMemory(szBuffer, sizeof(szBuffer));
+	return fReturn;
+}
+
+static BOOL WriteCardFile(__in HANDLE hFile, __in PCWSTR szUser, __in PBYTE pbData, __in DWORD cbData, __in_opt PCWSTR szPin)
+{
+	DWORD dwB64 = 0, dwWritten;
+	if (!CryptBinaryToStringA(pbData, cbData, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &dwB64))
+	{
+		return FALSE;
+	}
+	PSTR szB64 = (PSTR) EIDAlloc(dwB64);
+	if (!szB64)
+	{
+		return FALSE;
+	}
+	BOOL fReturn = CryptBinaryToStringA(pbData, cbData, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, szB64, &dwB64)
+		&& WriteFile(hFile, CARD_FILE_HEADER "\r\n", (DWORD) strlen(CARD_FILE_HEADER "\r\n"), &dwWritten, NULL)
+		&& WriteUtf8(hFile, "account", szUser)
+		&& WriteFile(hFile, "credential=", 11, &dwWritten, NULL)
+		&& WriteFile(hFile, szB64, (DWORD) strlen(szB64), &dwWritten, NULL)
+		&& WriteFile(hFile, "\r\n", 2, &dwWritten, NULL)
+		&& (!szPin || WriteUtf8(hFile, "pin", szPin));
+	EIDFree(szB64);
+	return fReturn;
+}
+
+// reads the card copy file named by EID_AUTOLOGON_IN. *pszText receives the whole file (to zero and free),
+// the other pointers point into it; szPin is NULL when the file holds no PIN.
+static DWORD ReadCardFile(__out PSTR* pszText, __out PSTR* pszAccount, __out PSTR* pszCredential, __out PSTR* pszPin)
+{
+	WCHAR szPath[MAX_PATH];
+	*pszText = *pszAccount = *pszCredential = *pszPin = NULL;
+	DWORD dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_IN", szPath, ARRAYSIZE(szPath));
+	if (dwLen == 0 || dwLen >= ARRAYSIZE(szPath))
+	{
+		return ERROR_BAD_ARGUMENTS;
+	}
+	HANDLE hFile = CreateFileW(szPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		return GetLastError();
+	}
+	DWORD dwSize = GetFileSize(hFile, NULL), dwRead = 0, dwError = 0;
+	PSTR szText = NULL;
+	if (dwSize == INVALID_FILE_SIZE || dwSize == 0 || dwSize > CARD_FILE_MAXSIZE)
+	{
+		dwError = ERROR_INVALID_DATA;
+	}
+	else if (!(szText = (PSTR) EIDAlloc(dwSize + 1)))
+	{
+		dwError = GetLastError();
+	}
+	else if (!ReadFile(hFile, szText, dwSize, &dwRead, NULL) || dwRead != dwSize)
+	{
+		dwError = ERROR_READ_FAULT;
+	}
+	CloseHandle(hFile);
+	if (dwError)
+	{
+		if (szText) EIDFree(szText);
+		return dwError;
+	}
+	szText[dwSize] = '\0';
+	*pszText = szText;
+	BOOL fHeader = FALSE;
+	PSTR szContext = NULL;
+	for (PSTR szLine = strtok_s(szText, "\r\n", &szContext); szLine; szLine = strtok_s(NULL, "\r\n", &szContext))
+	{
+		if (!fHeader)
+		{
+			if (strcmp(szLine, CARD_FILE_HEADER) != 0)
+			{
+				return ERROR_INVALID_DATA;
+			}
+			fHeader = TRUE;
+		}
+		else if (strncmp(szLine, "account=", 8) == 0) *pszAccount = szLine + 8;
+		else if (strncmp(szLine, "credential=", 11) == 0) *pszCredential = szLine + 11;
+		else if (strncmp(szLine, "pin=", 4) == 0) *pszPin = szLine + 4;
+	}
+	return (fHeader && *pszCredential && (*pszCredential)[0]) ? 0 : ERROR_INVALID_DATA;
 }
 
 static VOID ListAccount(__in PCWSTR szName, __in DWORD dwRid, __in_opt PVOID pContext)
@@ -239,6 +351,160 @@ extern "C"
 		{
 			EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_ADMIN,
 				L"An administrator removed the card of %s (RID 0x%X).", szUser, dwRid);
+		}
+	}
+
+	// rundll32 EIDAuthenticationPackage.dll,ExportUserCard
+	// writes the card copy file of the account named by EID_AUTOLOGON_USER to EID_AUTOLOGON_OUT
+	// (CREATE_NEW), with its saved tap sign-in PIN when EID_AUTOLOGON_WITHPIN=1. Needs SYSTEM.
+	void NTAPI ExportUserCard()
+	{
+		WCHAR szUser[UNLEN+1], szWithPin[4];
+		PBYTE pbData = NULL;
+		DWORD cbData = 0;
+		PWSTR szPin = NULL;
+		DWORD dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_USER", szUser, ARRAYSIZE(szUser));
+		if (dwLen == 0 || dwLen >= ARRAYSIZE(szUser))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EID_AUTOLOGON_USER missing or too long");
+			return;
+		}
+		DWORD dwRid = GetRidFromUsername(szUser);
+		if (!dwRid || !LsaEIDExportStoredCredential(szUser, &pbData, &cbData))
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"No card to export for %s 0x%08x", szUser, GetLastError());
+			return;
+		}
+		dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_WITHPIN", szWithPin, ARRAYSIZE(szWithPin));
+		BOOL fWithPin = (dwLen == 1 && szWithPin[0] == L'1');
+		if (fWithPin && (!EIDIsAutoLogonPinStored(dwRid) || !EIDGetAutoLogonPin(dwRid, &szPin)))
+		{
+			szPin = NULL;
+		}
+		HANDLE hOut = OpenOutput();
+		if (hOut == INVALID_HANDLE_VALUE)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"OpenOutput 0x%08x",GetLastError());
+		}
+		else
+		{
+			if (!WriteCardFile(hOut, szUser, pbData, cbData, szPin))
+			{
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"WriteCardFile 0x%08x",GetLastError());
+			}
+			else
+			{
+				EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_ADMIN,
+					L"An administrator exported the card of %s (RID 0x%X) %s.", szUser, dwRid,
+					szPin ? L"with its saved PIN" : L"without a PIN");
+			}
+			CloseHandle(hOut);
+		}
+		if (szPin)
+		{
+			SecureZeroMemory(szPin, wcslen(szPin) * sizeof(WCHAR));
+			EIDFree(szPin);
+		}
+		SecureZeroMemory(pbData, cbData);
+		EIDFree(pbData);
+	}
+
+	// rundll32 EIDAuthenticationPackage.dll,ImportUserCard
+	// enrolls the card of the copy file EID_AUTOLOGON_IN for the account named by EID_AUTOLOGON_USER
+	// (default : the account in the file) and saves its PIN when the file has one. The card must be
+	// trusted here and not enrolled for another account. Writes "OK" or "ERROR 0x..." to
+	// EID_AUTOLOGON_OUT. Needs SYSTEM.
+	void NTAPI ImportUserCard()
+	{
+		WCHAR szUser[UNLEN+1];
+		WCHAR szPin[CARD_PIN_MAXLEN + 1];
+		PSTR szText = NULL, szAccount = NULL, szCredential = NULL, szFilePin = NULL;
+		PBYTE pbData = NULL;
+		DWORD cbData = 0, dwRid = 0;
+		BOOL fPin = FALSE;
+		szPin[0] = L'\0';
+		DWORD dwError = ReadCardFile(&szText, &szAccount, &szCredential, &szFilePin);
+		__try
+		{
+			if (dwError)
+			{
+				__leave;
+			}
+			DWORD dwLen = GetEnvironmentVariableW(L"EID_AUTOLOGON_USER", szUser, ARRAYSIZE(szUser));
+			if (dwLen >= ARRAYSIZE(szUser))
+			{
+				dwError = ERROR_BAD_ARGUMENTS;
+				__leave;
+			}
+			if (dwLen == 0 && (!szAccount || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szAccount, -1, szUser, ARRAYSIZE(szUser))))
+			{
+				dwError = ERROR_BAD_ARGUMENTS;
+				__leave;
+			}
+			dwRid = GetRidFromUsername(szUser);
+			if (!dwRid)
+			{
+				dwError = ERROR_NONE_MAPPED;
+				__leave;
+			}
+			if (szFilePin && szFilePin[0])
+			{
+				if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, szFilePin, -1, szPin, ARRAYSIZE(szPin)))
+				{
+					dwError = ERROR_INVALID_DATA;
+					__leave;
+				}
+				fPin = TRUE;
+			}
+			if (!CryptStringToBinaryA(szCredential, 0, CRYPT_STRING_BASE64, NULL, &cbData, NULL, NULL)
+				|| !(pbData = (PBYTE) EIDAlloc(cbData))
+				|| !CryptStringToBinaryA(szCredential, 0, CRYPT_STRING_BASE64, pbData, &cbData, NULL, NULL))
+			{
+				dwError = ERROR_INVALID_DATA;
+				__leave;
+			}
+			if (!LsaEIDImportStoredCredential(szUser, pbData, cbData))
+			{
+				dwError = GetLastError();
+				if (!dwError) dwError = ERROR_INVALID_DATA;
+				__leave;
+			}
+			EIDSetPasswordStale(dwRid, FALSE);
+			if (fPin && !EIDSetUserAutoLogonPin(dwRid, szPin))
+			{
+				dwError = GetLastError();
+				EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"EIDSetUserAutoLogonPin 0x%08x", dwError);
+			}
+			EIDAuditEvent(EVENTLOG_INFORMATION_TYPE, EID_EVENT_PIN_ADMIN,
+				L"An administrator imported the card of %s (RID 0x%X) from another computer %s.", szUser, dwRid,
+				fPin && !dwError ? L"with its saved PIN" : L"without a PIN");
+		}
+		__finally
+		{
+			SecureZeroMemory(szPin, sizeof(szPin));
+			if (pbData)
+			{
+				SecureZeroMemory(pbData, cbData);
+				EIDFree(pbData);
+			}
+			if (szText)
+			{
+				SecureZeroMemory(szText, strlen(szText));
+				EIDFree(szText);
+			}
+		}
+		HANDLE hOut = OpenOutput();
+		if (hOut != INVALID_HANDLE_VALUE)
+		{
+			if (dwError)
+			{
+				WriteOutputLine(hOut, L"ERROR 0x%08X", dwError);
+			}
+			else
+			{
+				WriteOutputLine(hOut, L"OK %s", szUser);
+			}
+			CloseHandle(hOut);
 		}
 	}
 

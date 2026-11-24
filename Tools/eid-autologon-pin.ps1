@@ -8,16 +8,22 @@
                  The user's next sign-in with card + PIN saves it again; to offboard,
                  unenroll the card as well.
   -RemoveCard -User  unenroll the card of an account and forget its PIN (offboarding, lost card)
+  -ExportCard -User -Path  copy an account's card enrollment and saved PIN to a file (-NoPin : without the PIN)
+  -ImportCard -Path [-User]  enroll that card on this computer from the file (default : the account in the file)
+                 The file holds the PIN : keep it admin-only, move it admin to admin, delete it after the import.
   -SetStation    set the fallback PIN shared by every badge (prompted, never on the command line)
   -ClearStation  remove the fallback PIN
   -Events        the audit trail (Application log, source EIDAuthentication)
 
-  Reading the LSA secrets needs SYSTEM : -List, -Clear and -RemoveCard run through a one-shot scheduled task.
+  Reading the LSA secrets needs SYSTEM : -List, -Clear, -RemoveCard, -ExportCard and -ImportCard run through
+  a one-shot scheduled task.
 
 .EXAMPLE
   .\eid-autologon-pin.ps1 -List
   .\eid-autologon-pin.ps1 -Clear -User jdoe
   .\eid-autologon-pin.ps1 -Events -Last 50
+  .\eid-autologon-pin.ps1 -ExportCard -User ian -Path C:\Temp\ian.eidcard    (on the computer where ian enrolled)
+  .\eid-autologon-pin.ps1 -ImportCard -Path C:\Temp\ian.eidcard             (on each other computer)
 #>
 #Requires -RunAsAdministrator
 [CmdletBinding(DefaultParameterSetName = 'List')]
@@ -25,8 +31,15 @@ param(
     [Parameter(ParameterSetName = 'List')][switch]$List,
     [Parameter(ParameterSetName = 'Clear', Mandatory)][switch]$Clear,
     [Parameter(ParameterSetName = 'Clear', Mandatory)]
-    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][string]$User,
+    [Parameter(ParameterSetName = 'RemoveCard', Mandatory)]
+    [Parameter(ParameterSetName = 'ExportCard', Mandatory)]
+    [Parameter(ParameterSetName = 'ImportCard')][string]$User,
     [Parameter(ParameterSetName = 'RemoveCard', Mandatory)][switch]$RemoveCard,
+    [Parameter(ParameterSetName = 'ExportCard', Mandatory)][switch]$ExportCard,
+    [Parameter(ParameterSetName = 'ExportCard')][switch]$NoPin,
+    [Parameter(ParameterSetName = 'ImportCard', Mandatory)][switch]$ImportCard,
+    [Parameter(ParameterSetName = 'ExportCard', Mandatory)]
+    [Parameter(ParameterSetName = 'ImportCard', Mandatory)][string]$Path,
     [Parameter(ParameterSetName = 'SetStation', Mandatory)][switch]$SetStation,
     [Parameter(ParameterSetName = 'ClearStation', Mandatory)][switch]$ClearStation,
     [Parameter(ParameterSetName = 'Events', Mandatory)][switch]$Events,
@@ -53,6 +66,23 @@ function New-PrivateWorkDir {
         throw "$path is not a private folder (owner $owner)."
     }
     $path
+}
+
+# The card copy file holds the PIN : only SYSTEM and Administrators may read it.
+function Protect-AdminOnlyFile([string]$File) {
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') {
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'Allow')))
+    }
+    $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    Set-Acl -LiteralPath $File -AclObject $acl
+}
+
+function Assert-LocalAccount([string]$Name) {
+    if ($Name -notmatch '^[\w.\- ]{1,20}$') { throw "Invalid account name: $Name" }
+    if (-not (Get-LocalUser -Name $Name -ErrorAction SilentlyContinue)) { throw "No local account named $Name" }
 }
 
 function Invoke-AsSystem([string]$Command, [string]$Variables) {
@@ -96,6 +126,46 @@ switch ($PSCmdlet.ParameterSetName) {
         if (-not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { throw "No local account named $User" }
         Invoke-AsSystem 'RemoveUserCard' "set `"EID_AUTOLOGON_USER=$User`"&&"
         Write-Host "Removed the card of $User (see -Events). The next sign-in with a card enrolls it again."
+    }
+    'ExportCard' {
+        Assert-LocalAccount $User
+        if (Test-Path -LiteralPath $Path) { throw "$Path already exists." }
+        $workDir = New-PrivateWorkDir
+        try {
+            $out = Join-Path $workDir 'card.eidcard'
+            $withPin = if ($NoPin) { '0' } else { '1' }
+            Invoke-AsSystem 'ExportUserCard' "set `"EID_AUTOLOGON_USER=$User`"&&set EID_AUTOLOGON_WITHPIN=$withPin&&set `"EID_AUTOLOGON_OUT=$out`"&&"
+            if (-not (Test-Path -LiteralPath $out)) { throw "No card to export for $User (not enrolled on this computer?)." }
+            Copy-Item -LiteralPath $out -Destination $Path
+            Protect-AdminOnlyFile $Path
+            $hasPin = [bool](Select-String -LiteralPath $Path -Pattern '^pin=' -Quiet)
+            Write-Host "Exported the card of $User to $Path ($(if ($hasPin) { 'with' } else { 'without' }) the saved PIN)."
+            if ($hasPin) { Write-Warning 'The file holds the PIN: keep it admin-only and delete it after the import.' }
+        } finally {
+            Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    'ImportCard' {
+        if ($User) { Assert-LocalAccount $User }
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "No file $Path" }
+        $workDir = New-PrivateWorkDir
+        try {
+            $in = Join-Path $workDir 'card.eidcard'
+            $out = Join-Path $workDir 'result.txt'
+            Copy-Item -LiteralPath $Path -Destination $in
+            $userVar = if ($User) { "set `"EID_AUTOLOGON_USER=$User`"&&" } else { '' }
+            Invoke-AsSystem 'ImportUserCard' "$userVar set `"EID_AUTOLOGON_IN=$in`"&&set `"EID_AUTOLOGON_OUT=$out`"&&"
+            if (-not (Test-Path -LiteralPath $out)) { throw 'No result: is this build older than ImportUserCard?' }
+            $result = (Get-Content -LiteralPath $out -Encoding UTF8 | Select-Object -First 1)
+            if ($result -notlike 'OK *') {
+                $code = [Convert]::ToInt32(($result -replace '^ERROR 0x', ''), 16)
+                $text = (New-Object System.ComponentModel.Win32Exception($code)).Message
+                throw "Import refused: $result ($text). Check that the badge CA is trusted here and the card isn't enrolled for another account."
+            }
+            Write-Host "Imported the card for $($result.Substring(3)). Inserting it at the lock screen now signs in without typing (see -Events)."
+        } finally {
+            Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     'SetStation' {
         $secure = Read-Host 'Station PIN' -AsSecureString

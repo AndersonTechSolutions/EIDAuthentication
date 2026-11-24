@@ -52,8 +52,16 @@ Audit trail: the Application log, source `EIDAuthentication`.
 | 1013 | Stored password updated after a Windows password change |
 | 1020 | An administrator set or cleared a PIN |
 
+Copy a card to the other computers (v0.4.0): enroll once, then every other station signs in on insert with no typing.
+
+1. On the computer where the employee enrolled: `eid-autologon-pin.ps1 -ExportCard -User ian -Path C:\Temp\ian.eidcard`. The file holds the card's stored password copy, which only that card and its PIN can open, plus the saved PIN (`-NoPin` leaves the PIN out; the employee then types it once per computer). The script makes the file readable by SYSTEM and administrators only.
+2. On each other computer: `eid-autologon-pin.ps1 -ImportCard -Path C:\Temp\ian.eidcard` (the account in the file, or `-User <name>`). The import refuses a card whose certificate isn't trusted there (badge CA, EKU, Disallowed) or that is enrolled for another account.
+3. Delete the file. It holds the PIN: move it admin to admin only (USB kit, admin SSH), never through Odoo or a shared folder.
+
+The copied password is the one from the enrollment. After a Windows password change, each computer asks for the new password once; export and import again to spare that.
+
 Admin script `Tools\eid-autologon-pin.ps1` (Windows PowerShell 5.1, run as administrator):
-`-List` (saved PIN and enrolled card per account, never the PIN itself), `-Clear -User <name|*>`, `-RemoveCard -User <name>` (offboarding or a lost card: removes the card and the saved PIN), `-SetStation`, `-ClearStation`, `-Events [-Last N]`.
-It calls `rundll32 %WINDIR%\System32\EIDAuthenticationPackage.dll,<command>`. `ListAutoLogonPins`, `ClearUserAutoLogonPin` and `RemoveUserCard` need SYSTEM, so the script runs them through a one-shot SYSTEM scheduled task. `-List` writes its output to a fresh folder under `%SystemRoot%\Temp` that only SYSTEM and administrators can write, and deletes it afterwards.
+`-List` (saved PIN and enrolled card per account, never the PIN itself), `-Clear -User <name|*>`, `-RemoveCard -User <name>` (offboarding or a lost card: removes the card and the saved PIN), `-ExportCard -User <name> -Path <file> [-NoPin]`, `-ImportCard -Path <file> [-User <name>]`, `-SetStation`, `-ClearStation`, `-Events [-Last N]`.
+It calls `rundll32 %WINDIR%\System32\EIDAuthenticationPackage.dll,<command>`. `ListAutoLogonPins`, `ClearUserAutoLogonPin`, `RemoveUserCard`, `ExportUserCard` and `ImportUserCard` need SYSTEM, so the script runs them through a one-shot SYSTEM scheduled task. `-List` writes its output to a fresh folder under `%SystemRoot%\Temp` that only SYSTEM and administrators can write, and deletes it afterwards.
 
 Card readers held exclusively by another application at insertion (for example a badge service reading NDEF) are waited for instead of being missed.

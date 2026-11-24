@@ -927,6 +927,28 @@ BOOL LsaEIDRemoveStoredCredential(__in_opt PWSTR szUsername)
 	return CStoredCredentialManager::Instance()->RemoveStoredCredential(dwRid);
 }
 
+BOOL LsaEIDExportStoredCredential(__in PWSTR szUsername, __out PBYTE* ppbData, __out PDWORD pcbData)
+{
+	DWORD dwRid = GetRidFromUsername(szUsername);
+	if (!dwRid)
+	{
+		SetLastError(ERROR_NONE_MAPPED);
+		return FALSE;
+	}
+	return CStoredCredentialManager::Instance()->ExportCredential(dwRid, ppbData, pcbData);
+}
+
+BOOL LsaEIDImportStoredCredential(__in PWSTR szUsername, __in_bcount(cbData) PBYTE pbData, __in DWORD cbData)
+{
+	DWORD dwRid = GetRidFromUsername(szUsername);
+	if (!dwRid)
+	{
+		SetLastError(ERROR_NONE_MAPPED);
+		return FALSE;
+	}
+	return CStoredCredentialManager::Instance()->ImportCredential(dwRid, pbData, cbData);
+}
+
 BOOL LsaEIDRemoveAllStoredCredential()
 {
 	return CStoredCredentialManager::Instance()->RemoveAllStoredCredential();

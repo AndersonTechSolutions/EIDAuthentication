@@ -50,6 +50,7 @@ extern "C"
 
 // level 1
 #include "StoredCredentialManagement.h"
+#include "CertificateValidation.h"
 CStoredCredentialManager *CStoredCredentialManager::theSingleInstance = NULL;
 
 BOOL CStoredCredentialManager::GetUsernameFromCertContext(__in PCCERT_CONTEXT pContext, __out PWSTR *pszUsername, __out PDWORD pdwRid)
@@ -717,6 +718,103 @@ BOOL CStoredCredentialManager::GetSignatureChallenge(__out PBYTE* ppChallenge, _
 	SetLastError(dwError);
 	return fReturn;
 }
+// the stored credential as is : certificate, symmetric key wrapped for the card, encrypted password.
+// Only an encrypted one is exported (never a clear text password).
+BOOL CStoredCredentialManager::ExportCredential(__in DWORD dwRid, __out PBYTE* ppbData, __out PDWORD pcbData)
+{
+	PEID_PRIVATE_DATA pPrivateData = NULL;
+	DWORD dwSize = 0;
+	*ppbData = NULL;
+	*pcbData = 0;
+	if (!RetrievePrivateData(dwRid, &pPrivateData, &dwSize))
+	{
+		return FALSE;
+	}
+	if (dwSize < FIELD_OFFSET(EID_PRIVATE_DATA, Data) || pPrivateData->dwType != eidpdtCrypted)
+	{
+		EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Credential of rid 0x%x can't be exported (type %d)", dwRid, pPrivateData->dwType);
+		SecureZeroMemory(pPrivateData, dwSize);
+		EIDFree(pPrivateData);
+		SetLastError(ERROR_NOT_SUPPORTED);
+		return FALSE;
+	}
+	*ppbData = (PBYTE) pPrivateData;
+	*pcbData = dwSize;
+	return TRUE;
+}
+
+// stores an exported credential for dwRid after checking it : well formed, encrypted, a certificate
+// trusted here (chain, EKU, Disallowed) and not enrolled for another account of this computer
+BOOL CStoredCredentialManager::ImportCredential(__in DWORD dwRid, __in_bcount(cbData) PBYTE pbData, __in DWORD cbData)
+{
+	PEID_PRIVATE_DATA pPrivateData = (PEID_PRIVATE_DATA) pbData;
+	PCCERT_CONTEXT pCertContext = NULL;
+	PWSTR szOtherUser = NULL;
+	DWORD dwOtherRid = 0;
+	DWORD dwError = 0;
+	BOOL fReturn = FALSE;
+	__try
+	{
+		DWORD dwHeader = FIELD_OFFSET(EID_PRIVATE_DATA, Data);
+		if (!dwRid || !pbData || cbData < dwHeader || cbData > 0xFFFF || pPrivateData->dwType != eidpdtCrypted)
+		{
+			dwError = ERROR_INVALID_DATA;
+			__leave;
+		}
+		DWORD dwData = cbData - dwHeader;
+		if (pPrivateData->dwCertificatSize == 0 || pPrivateData->dwSymetricKeySize == 0 || pPrivateData->dwPasswordSize == 0
+			|| (DWORD) pPrivateData->dwCertificatOffset + pPrivateData->dwCertificatSize > dwData
+			|| (DWORD) pPrivateData->dwSymetricKeyOffset + pPrivateData->dwSymetricKeySize > dwData
+			|| (DWORD) pPrivateData->dwPasswordOffset + pPrivateData->dwPasswordSize > dwData)
+		{
+			dwError = ERROR_INVALID_DATA;
+			__leave;
+		}
+		pCertContext = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+			pPrivateData->Data + pPrivateData->dwCertificatOffset, pPrivateData->dwCertificatSize);
+		if (!pCertContext)
+		{
+			dwError = GetLastError();
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"CertCreateCertificateContext 0x%08x", dwError);
+			__leave;
+		}
+		BYTE Hash[CERT_HASH_LENGTH];
+		DWORD dwHashSize = CERT_HASH_LENGTH;
+		if (!CryptHashCertificate(NULL, CALG_SHA1, 0, pCertContext->pbCertEncoded, pCertContext->cbCertEncoded, Hash, &dwHashSize)
+			|| memcmp(Hash, pPrivateData->Hash, CERT_HASH_LENGTH) != 0)
+		{
+			dwError = ERROR_INVALID_DATA;
+			__leave;
+		}
+		if (!IsTrustedCertificate(pCertContext))
+		{
+			dwError = GetLastError();
+			if (!dwError) dwError = (DWORD) CERT_E_UNTRUSTEDROOT;
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"Untrusted certificate 0x%08x", dwError);
+			__leave;
+		}
+		if (GetUsernameFromCertContext(pCertContext, &szOtherUser, &dwOtherRid) && dwOtherRid != dwRid)
+		{
+			EIDCardLibraryTrace(WINEVENT_LEVEL_WARNING,L"The card is enrolled for %s here", szOtherUser);
+			dwError = ERROR_ALREADY_ASSIGNED;
+			__leave;
+		}
+		if (!StorePrivateData(dwRid, pbData, (USHORT) cbData))
+		{
+			dwError = GetLastError();
+			__leave;
+		}
+		fReturn = TRUE;
+	}
+	__finally
+	{
+		if (pCertContext) CertFreeCertificateContext(pCertContext);
+		if (szOtherUser) EIDFree(szOtherUser);
+	}
+	SetLastError(dwError);
+	return fReturn;
+}
+
 BOOL CStoredCredentialManager::RemoveStoredCredential(__in DWORD dwRid)
 {
 	return StorePrivateData(dwRid, NULL, 0);
@@ -1898,7 +1996,7 @@ BOOL CStoredCredentialManager::StorePrivateDataDebug(__in DWORD dwRid, __in_opt 
 	return fReturn;
 }
 
-BOOL CStoredCredentialManager::RetrievePrivateData(__in DWORD dwRid, __out PEID_PRIVATE_DATA *ppPrivateData)
+BOOL CStoredCredentialManager::RetrievePrivateData(__in DWORD dwRid, __out PEID_PRIVATE_DATA *ppPrivateData, __out_opt PDWORD pdwSize)
 {
 	// v0.3.0 : always the LSA secret (see StorePrivateData)
 
@@ -1959,6 +2057,10 @@ BOOL CStoredCredentialManager::RetrievePrivateData(__in DWORD dwRid, __out PEID_
 			__leave;
 		}
 		memcpy(*ppPrivateData, pData->Buffer, pData->Length);
+		if (pdwSize)
+		{
+			*pdwSize = pData->Length;
+		}
 		fReturn = TRUE;
 	}
 	__finally
