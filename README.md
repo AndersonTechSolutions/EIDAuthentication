@@ -58,6 +58,12 @@ Copy a card to the other computers (v0.4.0): enroll once, then every other stati
 2. On each other computer: `eid-autologon-pin.ps1 -ImportCard -Path C:\Temp\ian.eidcard` (the account in the file, or `-User <name>`). The import refuses a card whose certificate isn't trusted there (badge CA, EKU, Disallowed) or that is enrolled for another account.
 3. Delete the file. It holds the PIN: move it admin to admin only (USB kit, admin SSH), never through Odoo or a shared folder.
 
+Or seal the copy so it can travel any way (chat, ticket, SSH output): only the target computer can open it.
+
+1. On the target: `-NewTransferKey` prints `EIDTKEY1:...`, the public part of a non-exportable machine key of that computer.
+2. On the source: `-ExportCard -User ian -ToKey EIDTKEY1:...` prints `EIDSEALED1 ...` (RSA-3072 OAEP-SHA256 wrapping AES-256 + HMAC-SHA256).
+3. On the target: `-ImportCard -Sealed "EIDSEALED1 ..."`. `-RemoveTransferKey` deletes the key afterwards.
+
 The copied password is the one from the enrollment. After a Windows password change, each computer asks for the new password once; export and import again to spare that.
 
 Admin script `Tools\eid-autologon-pin.ps1` (Windows PowerShell 5.1, run as administrator):
