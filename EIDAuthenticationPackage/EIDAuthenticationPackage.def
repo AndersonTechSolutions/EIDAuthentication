@@ -10,6 +10,8 @@ ClearAutoLogonPin
 ListAutoLogonPins
 ClearUserAutoLogonPin
 RemoveUserCard
+ExportUserCard
+ImportUserCard
 LsaApCallPackage
 LsaApCallPackagePassthrough
 LsaApCallPackageUntrusted
