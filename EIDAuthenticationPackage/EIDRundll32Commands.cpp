@@ -34,6 +34,11 @@ BOOL LsaEIDHasStoredCredential(__in_opt PWSTR szUsername);
 BOOL LsaEIDExportStoredCredential(__in PWSTR szUsername, __out PBYTE* ppbData, __out PDWORD pcbData);
 BOOL LsaEIDImportStoredCredential(__in PWSTR szUsername, __in_bcount(cbData) PBYTE pbData, __in DWORD cbData);
 DWORD GetRidFromUsername(LPTSTR szUsername);
+// from EIDCardLibrary.h (its other declarations need the LSA headers)
+PVOID EIDAllocEx(PCSTR szFile, DWORD dwLine, PCSTR szFunction,DWORD);
+VOID EIDFreeEx(PCSTR szFile, DWORD dwLine, PCSTR szFunction,PVOID);
+#define EIDAlloc(value) EIDAllocEx(__FILE__,__LINE__,__FUNCTION__,value)
+#define EIDFree(value) EIDFreeEx(__FILE__,__LINE__,__FUNCTION__,value)
 
 typedef VOID (*PFN_LOCAL_ACCOUNT)(__in PCWSTR szName, __in DWORD dwRid, __in_opt PVOID pContext);
 

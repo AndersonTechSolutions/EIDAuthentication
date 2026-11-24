@@ -6,6 +6,7 @@
 ## Patterns (promote at 3 hits)
 
 ## Observations (first sightings)
+- 2026-11-24: `EIDRundll32Commands.cpp` doesn't include `EIDCardLibrary.h`, so `EIDAlloc`/`EIDFree` are undefined there (CI C3861) → it declares `EIDAllocEx`/`EIDFreeEx` and the two macros locally → check a source file's includes before using a library helper in it. (hits: 1)
 - 2026-11-23: `Installerx64.nsi` `.onInit` aborts ("Please uninstall first !") whenever `System32\EIDAuthenticationPackage.dll` exists, and uninstalling first wipes every learnt PIN (DllUnRegister) → an in-place upgrade must rename the old System32 EID files to `.old-<stamp>` (the lsass ones are locked until reboot) before running `/S` → keep that rename step in any upgrade script, or teach `.onInit` to upgrade. (hits: 1)
 - 2026-11-22: `CStoredCredentialManager::StorePrivateData/RetrievePrivateData` silently fell back to `%TEMP%\EIDCredential<rid>.txt` when not running inside lsass (`EIDIsComponentInLSAContext`) → any code moved out of lsass would have written credentials to a temp file → v0.3.0 removed the fallback; grep for `EIDIsComponentInLSAContext` before moving more lsass code. (hits: 1)
 - 2026-11-22: `CheckPINandGetRemainingAttemptsIfPossible` returns success without checking for PIV cards (`Identity Device (NIST SP 800-73 [PIV])`) and non-minidriver CSPs → it proves nothing for our J3R180 badges → prove card + PIN by a decrypt (`CStoredCredentialManager::GetPassword`). (hits: 1)
