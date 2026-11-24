@@ -62,7 +62,9 @@ Or seal the copy so it can travel any way (chat, ticket, SSH output): only the t
 
 1. On the target: `-NewTransferKey` prints `EIDTKEY1:...`, the public part of a non-exportable machine key of that computer.
 2. On the source: `-ExportCard -User ian -ToKey EIDTKEY1:...` prints `EIDSEALED1 ...` (RSA-3072 OAEP-SHA256 wrapping AES-256 + HMAC-SHA256).
-3. On the target: `-ImportCard -Sealed "EIDSEALED1 ..."`. `-RemoveTransferKey` deletes the key afterwards.
+3. On the target: `-ImportCard -Sealed "EIDSEALED1 ..."`. It prints `IMPORTED account=<name> cert=<SHA-1>`.
+
+The transfer key is one-shot: the import deletes it, also when it refuses the copy (`-KeepKey` keeps it), and refuses a key older than 30 minutes (`-MaxKeyAgeMinutes`). A sealed copy opens on one computer only, once. Importing again for the same account overwrites, so a run can be repeated. Every refusal of the script exits with code 1 and one stderr line `EIDAUTH-ERROR: <reason>`.
 
 The copied password is the one from the enrollment. After a Windows password change, each computer asks for the new password once; export and import again to spare that.
 
